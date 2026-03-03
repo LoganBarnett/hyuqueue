@@ -1,0 +1,73 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/cli",
+  "crates/core",
+  "crates/lib",
+  "crates/server",
+  "crates/store",
+  "crates/tui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Logan <logan@example.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourusername/hyuqueue"
+
+[workspace.dependencies]
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = [
+  "env-filter",
+  "json",
+  "fmt",
+] }
+
+# Utilities
+tap = "1.0"
+
+# Async
+tokio = { version = "1.41", features = ["full"] }
+async-trait = "0.1"
+
+# CLI parsing
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Error handling
+thiserror = "2.0"
+
+# Web server
+axum = "0.7"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+
+# HTTP client (CLI → server, LLM client)
+reqwest = { version = "0.12", features = ["json"] }
+
+# Database
+sqlx = { version = "0.8", features = [
+  "sqlite",
+  "runtime-tokio",
+  "chrono",
+  "uuid",
+] }
+
+# Domain primitives
+uuid = { version = "1.11", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Workspace members
+hyuqueue-lib = { path = "crates/lib" }
+hyuqueue-core = { path = "crates/core" }
+hyuqueue-store = { path = "crates/store" }

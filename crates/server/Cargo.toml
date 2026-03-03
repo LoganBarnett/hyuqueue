@@ -1,0 +1,36 @@
+[package]
+name = "hyuqueue-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "hyuqueue_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hyuqueue-server"
+path = "src/main.rs"
+
+[dependencies]
+async-trait = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+hyuqueue-core = { workspace = true }
+hyuqueue-lib = { workspace = true }
+hyuqueue-store = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tap = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }

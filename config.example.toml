@@ -1,0 +1,18 @@
+# hyuqueue configuration example
+# Copy to config.toml and adjust as needed.
+
+# Logging
+log_level = "info"   # trace, debug, info, warn, error
+log_format = "text"  # text, json
+
+# Server
+host = "127.0.0.1"
+port = 8731
+db_path = "hyuqueue.db"
+
+# LLM (OpenAI-compatible — point at Ollama or any compatible server)
+[llm]
+base_url = "http://localhost:11434/v1"
+intake_model = "llama3.2"
+review_model = "llama3.2"
+# api_key = ""  # not needed for Ollama
