@@ -157,6 +157,7 @@
       cratePackages
       // {
         default = craneLib.buildPackage (commonArgs // {pname = "hyuqueue";});
+        emacs = import ./nix/packages/emacs.nix {inherit pkgs;};
       });
 
     apps = forAllSystems (system: let
