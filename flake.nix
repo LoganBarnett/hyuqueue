@@ -118,8 +118,15 @@
       pkgs = pkgsFor system;
       craneLib = (crane.mkLib pkgs).overrideToolchain (p: p.rust-bin.stable.latest.default);
 
+      sqlFilter = path: _type: builtins.match ".*\\.sql$" path != null;
+      src = pkgs.lib.cleanSourceWith {
+        src = ./.;
+        filter = path: type:
+          (sqlFilter path type) || (craneLib.filterCargoSources path type);
+      };
+
       commonArgs = {
-        src = craneLib.cleanCargoSource ./.;
+        inherit src;
         # LLM: Do NOT add darwin.apple_sdk.frameworks here - they were removed
         # in nixpkgs 25.11+. Use libiconv for Darwin builds instead.
         buildInputs = with pkgs;
