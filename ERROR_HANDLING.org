@@ -1,0 +1,108 @@
+#+title:     Error Handling Guidelines
+#+language:  en
+
+* Philosophy
+
+This project uses *semantic error types* with ~thiserror~ rather than
+generic error wrapping with ~anyhow~.
+
+** Why Not ~anyhow~?
+
+While ~anyhow~ is convenient, it encourages lazy error handling that
+loses important context.  Consider:
+
+#+begin_src rust :results none :exports code
+// BAD - Using anyhow blindly
+fn load_config() -> anyhow::Result<Config> {
+    let contents = std::fs::read_to_string("config.toml")?;
+    let config = toml::from_str(&contents)?;
+    Ok(config)
+}
+#+end_src
+
+When this fails, you get a generic error like "No such file or
+directory" with no context about what file, when, or why.
+
+* Core Principle: Always Add Context
+
+*All errors must include sufficient context to diagnose the problem
+without access to the source code or the running environment.*
+
+** Good example from this codebase
+
+#+begin_src rust :results none :exports code
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("Failed to read configuration file at {path:?} during \
+    startup: {source}")]
+    FileRead {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("Failed to parse configuration file at {path:?}: {source}")]
+    Parse {
+        path: PathBuf,
+        #[source]
+        source: toml::de::Error,
+    },
+
+    #[error("Configuration validation failed: {0}")]
+    Validation(String),
+}
+#+end_src
+
+* Error Type Hierarchy
+
+Structure your error types in layers:
+
+1. *Low-level errors* (in store, lib) — specific to that component.
+2. *Mid-level errors* (in server modules) — domain-specific.
+3. *Top-level errors* (in main.rs) — application lifecycle errors.
+
+Example hierarchy:
+
+#+begin_example
+ApplicationError::Database
+    └─ DbError::Connect
+        └─ sqlx::Error (connection refused)
+#+end_example
+
+Each layer adds context about what the application was trying to do.
+
+* Context to Include
+
+** File Operations
+
+Always include: file path, current working directory, operation type,
+underlying error.
+
+** Network Operations
+
+Always include: URL/address, operation type, timeout values if
+applicable, underlying error.
+
+** Database Operations
+
+Always include: query/operation type, table name, key identifiers
+(sanitized), underlying error.
+
+* Guidelines
+
+- Every error variant should explain context (what failed, why it
+  matters).
+- Use ~#[source]~ for error chains.
+- Be specific: ~ConfigFileRead~ not ~FileError~.
+- Handle errors at the right level — don't catch too early or bubble
+  without context.
+- Never log sensitive data (passwords, tokens, API keys).
+
+* Examples in the Codebase
+
+See these files for examples of good error handling:
+
+- ~crates/server/src/config.rs~ — staged configuration with semantic
+  errors.
+- ~crates/server/src/main.rs~ — top-level ~ApplicationError~ hierarchy.
+- ~crates/store/src/db.rs~ — database connection and migration errors.

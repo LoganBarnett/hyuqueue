@@ -1,13 +1,12 @@
 //! Item CRUD and action endpoints.
 
-use super::AppState;
+use crate::web_base::AppState;
 use axum::{
-  Router,
   extract::{Path, Query, State},
   http::StatusCode,
   response::IntoResponse,
   routing::{get, post},
-  Json,
+  Json, Router,
 };
 use chrono::Utc;
 use hyuqueue_core::{
@@ -137,11 +136,10 @@ async fn get_item(
       let event_log = events::for_item(&state.db, id).await.unwrap_or_default();
       Json(json!({ "item": item, "events": event_log })).into_response()
     }
-    Err(items::ItemsError::NotFound(_)) => (
-      StatusCode::NOT_FOUND,
-      Json(json!({ "error": "item not found" })),
-    )
-      .into_response(),
+    Err(items::ItemsError::NotFound(_)) => {
+      (StatusCode::NOT_FOUND, Json(json!({ "error": "item not found" })))
+        .into_response()
+    }
     Err(e) => (
       StatusCode::INTERNAL_SERVER_ERROR,
       Json(json!({ "error": e.to_string() })),

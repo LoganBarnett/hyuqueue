@@ -1,0 +1,118 @@
+#+title:     hyuqueue
+#+language:  en
+
+* Introduction
+
+hyuqueue (phonetic: "hyoo-queue") is a human work queue.  Items enter the
+system, pass through an LLM-powered intake for triage, and reach the human
+only when a decision is actually needed.  The system is self-grooming — it
+trends toward zero items over time.
+
+The architecture follows an *LLM sandwich* pattern: items flow through an
+intake LLM that auto-handles confident decisions, surface to a human queue
+for uncertain items, and then pass through a review LLM after the human
+acknowledges them to detect patterns and suggest automation policies.
+
+Emacs (via ~transient.el~) is the primary UI.  A TUI (ratatui) and web
+frontend (Elm) are secondary, proving the architecture is client-agnostic.
+
+* Installation
+
+** From source (Nix)
+
+#+begin_src sh :results none :exports code
+nix build .#server   # hyuqueue-server (daemon + frontend)
+nix build .#cli      # hyuqueue (CLI client)
+nix build .#tui      # hyuqueue-tui (TUI client)
+#+end_src
+
+** From source (Cargo)
+
+Requires Rust stable toolchain and SQLite development headers:
+
+#+begin_src sh :results none :exports code
+cargo build --workspace
+#+end_src
+
+** NixOS / nix-darwin
+
+Add the flake input and enable the module:
+
+#+begin_src nix :results none :exports code
+{
+  inputs.hyuqueue.url = "github:yourusername/hyuqueue";
+}
+#+end_src
+
+#+begin_src nix :results none :exports code
+# NixOS
+services.hyuqueue-server = {
+  enable = true;
+  port = 8731;
+};
+
+# nix-darwin
+services.hyuqueue-server = {
+  enable = true;
+  port = 8731;
+};
+#+end_src
+
+* Usage
+
+** Server
+
+#+begin_src sh :results none :exports code
+# Start with defaults (localhost:8731, SQLite in current directory)
+hyuqueue-server
+
+# With custom listen address and database path
+hyuqueue-server --listen 0.0.0.0:8731 --db-path /var/lib/hyuqueue/data.db
+
+# With OIDC authentication
+hyuqueue-server \
+  --base-url https://queue.example.com \
+  --oidc-issuer https://sso.example.com/application/o/hyuqueue \
+  --oidc-client-id hyuqueue \
+  --oidc-client-secret-file /run/secrets/oidc-secret
+#+end_src
+
+** CLI
+
+#+begin_src sh :results none :exports code
+hyuqueue next                           # Show the next item in iron mode
+hyuqueue list --state human_pending     # List items waiting for human
+hyuqueue ack <item-id>                  # Acknowledge an item (advances queue)
+hyuqueue add --title "Review PR" --source github --queue-id <uuid>
+hyuqueue count                          # Items in the human queue
+#+end_src
+
+** TUI
+
+#+begin_src sh :results none :exports code
+hyuqueue-tui                            # Iron mode: SPC to ack, r to refresh, q to quit
+#+end_src
+
+* Gotchas and Tradeoffs
+
+- *Iron mode* (default): one item at a time.  Only ~ack~ advances the
+  queue.  This is intentional — the queue succeeds when it shrinks.
+- *Source is required*: every item must have a ~--source~.  No sourceless
+  items.  This enables LLM policy matching.
+- *OIDC is optional*: the server starts without authentication when OIDC
+  fields are absent.  All four OIDC fields must be set together or all
+  absent.
+- *SQLite only*: PostgreSQL is deferred to the federation milestone.
+- Workers poll on fixed intervals (intake 2s, review 10s, outbound 5s).
+  This is adequate for the expected throughput.
+
+* Contributing
+
+#+begin_src sh :results none :exports code
+nix develop                              # Enter dev shell
+cargo test --workspace                   # Run all tests
+cargo clippy --workspace                 # Lint
+treefmt                                  # Format all files
+#+end_src
+
+See [[file:llms.org][llms.org]] for code guidelines and conventions.

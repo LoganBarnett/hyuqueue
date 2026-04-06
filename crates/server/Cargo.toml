@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = false
 
 [lib]
 name = "hyuqueue_server"
@@ -15,6 +16,7 @@ name = "hyuqueue-server"
 path = "src/main.rs"
 
 [dependencies]
+aide = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 chrono = { workspace = true }
@@ -22,15 +24,32 @@ clap = { workspace = true }
 hyuqueue-core = { workspace = true }
 hyuqueue-lib = { workspace = true }
 hyuqueue-store = { workspace = true }
+openidconnect = { workspace = true }
+prometheus = { workspace = true }
+reqwest = { workspace = true }
+schemars = { workspace = true }
+sd-notify = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tap = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-listener = { workspace = true }
 toml = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
-reqwest = { workspace = true }
+tower-sessions = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
+
+# tracing-journald connects to the systemd journal socket; unix-only.
+[target.'cfg(unix)'.dependencies]
+tracing-journald = { workspace = true }
+
+[dev-dependencies]
+openidconnect = { workspace = true }
+prometheus = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tower-sessions = { workspace = true }

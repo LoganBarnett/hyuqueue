@@ -3,7 +3,7 @@
 //! Any caller (Emacs, shell scripts, other tools, remote hyuqueue instances)
 //! can POST here to enqueue an item. No domain knowledge lives in the callers.
 
-use super::AppState;
+use crate::web_base::AppState;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use chrono::Utc;
 use hyuqueue_core::{

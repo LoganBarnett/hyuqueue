@@ -5,14 +5,19 @@
 //!
 //! # LLM Development Guidelines
 //! - Keep configuration in config.rs.
+//! - Keep base web functionality (healthz, metrics, openapi) in web_base.rs.
 //! - Add new API routes in api/ modules, not here.
-//! - Workers are in workers/ — each is a long-running tokio task.
+//! - Maintain the staged configuration pattern (CliRaw -> ConfigFileRaw -> Config)
 //! - Use semantic error types with thiserror — no anyhow.
+//! - Preserve systemd::notify_ready() and systemd::spawn_watchdog() after bind.
 
-use hyuqueue_server::{api, config, logging, workers};
+mod logging;
+mod systemd;
+
+use hyuqueue_server::{api, auth, config, web_base, workers};
 use hyuqueue_store::Db;
 
-use axum::Router;
+use axum::{routing::get, Router};
 use clap::Parser;
 use config::{CliRaw, Config, ConfigError};
 use logging::init_logging;
@@ -20,7 +25,9 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::signal;
 use tower_http::trace::TraceLayer;
+use tower_sessions::{cookie::SameSite, MemoryStore, SessionManagerLayer};
 use tracing::{error, info};
+use web_base::{AppState, AppStateError};
 
 #[derive(Debug, Error)]
 enum ApplicationError {
@@ -33,6 +40,9 @@ enum ApplicationError {
     #[source]
     source: hyuqueue_store::db::DbError,
   },
+
+  #[error("Failed to initialize application state: {0}")]
+  StateInit(#[from] AppStateError),
 
   #[error("Failed to bind server to {address}: {source}")]
   Bind {
@@ -71,33 +81,64 @@ async fn main() -> Result<(), ApplicationError> {
 
   info!("Workers started");
 
-  let state = api::AppState::new(db);
-  let app = Router::new()
-    .merge(api::router(state))
-    .layer(TraceLayer::new_for_http());
+  let state = AppState::init(&config, db).await.map_err(|e| {
+    error!("Failed to initialize application state: {}", e);
+    ApplicationError::StateInit(e)
+  })?;
 
-  let addr = config.bind_address();
-  info!(address = %addr, "Binding HTTP server");
+  let app = create_app(state);
 
-  let listener =
-    tokio::net::TcpListener::bind(&addr).await.map_err(|source| {
-      ApplicationError::Bind {
-        address: addr.clone(),
-        source,
-      }
-    })?;
+  info!("Binding to {}", config.listen_address);
 
-  info!(address = %addr, "hyuqueue-server listening");
-  info!(address = %addr, "Health check: http://{}/healthz", addr);
-  info!(address = %addr, "API: http://{}/api/v1", addr);
+  let listener = tokio_listener::Listener::bind(
+    &config.listen_address,
+    &tokio_listener::SystemOptions::default(),
+    &tokio_listener::UserOptions::default(),
+  )
+  .await
+  .map_err(|source| {
+    error!("Failed to bind to {}: {}", config.listen_address, source);
+    ApplicationError::Bind {
+      address: config.listen_address.to_string(),
+      source,
+    }
+  })?;
 
-  axum::serve(listener, app)
+  info!("hyuqueue-server listening on {}", config.listen_address);
+
+  systemd::notify_ready();
+  systemd::spawn_watchdog();
+
+  axum::serve(listener, app.into_make_service())
     .with_graceful_shutdown(shutdown_signal())
     .await
     .map_err(ApplicationError::Runtime)?;
 
   info!("hyuqueue-server shut down");
   Ok(())
+}
+
+fn create_app(state: AppState) -> Router {
+  let session_store = MemoryStore::default();
+  // SameSite::Lax is required: Strict suppresses the session cookie on the
+  // cross-site redirect back from the OIDC provider.
+  let session_layer = SessionManagerLayer::new(session_store)
+    .with_secure(true)
+    .with_same_site(SameSite::Lax);
+
+  let auth_router = Router::new()
+    .route("/auth/login", get(auth::login_handler))
+    .route("/auth/callback", get(auth::callback_handler))
+    .route("/auth/logout", get(auth::logout_handler))
+    .with_state(state.clone());
+
+  let api_router = api::api_router().with_state(state.clone());
+
+  web_base::base_router(state)
+    .merge(auth_router)
+    .nest("/api/v1", api_router)
+    .layer(session_layer)
+    .layer(TraceLayer::new_for_http())
 }
 
 async fn shutdown_signal() {

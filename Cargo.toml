@@ -17,13 +17,17 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/yourusername/hyuqueue"
 
 [workspace.dependencies]
-# Logging
+# Logging and tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = [
   "env-filter",
   "json",
   "fmt",
 ] }
+tracing-journald = "0.3"
+
+# Systemd integration
+sd-notify = "0.4"
 
 # Utilities
 tap = "1.0"
@@ -43,10 +47,11 @@ toml = "0.8"
 # Error handling
 thiserror = "2.0"
 
-# Web server
-axum = "0.7"
+# Web framework
+axum = "0.8"
+tokio-listener = { version = "0.5", features = ["axum08"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["trace", "cors"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "fs", "set-header"] }
 
 # HTTP client (CLI → server, LLM client)
 reqwest = { version = "0.12", features = ["json"] }
@@ -67,7 +72,46 @@ chrono = { version = "0.4", features = ["serde"] }
 ratatui = "0.29"
 crossterm = "0.28"
 
+# OpenMetrics/Prometheus
+prometheus = "0.13"
+
+# OpenAPI
+aide = { version = "0.15", features = ["axum", "axum-json", "axum-query", "scalar", "macros"] }
+schemars = "0.9"
+
+# Authentication
+openidconnect = { version = "3", features = ["reqwest"] }
+tower-sessions = { version = "0.15", features = ["memory-store"] }
+
+# Testing
+tempfile = "3"
+
 # Workspace members
 hyuqueue-lib = { path = "crates/lib" }
 hyuqueue-core = { path = "crates/core" }
 hyuqueue-store = { path = "crates/store" }
+
+# ============================================================================
+# BUILD PROFILES
+# ============================================================================
+# Without these settings, target/debug can easily reach 20-40 GB on
+# non-trivial projects.  Dependencies are the primary culprit.
+
+[profile.dev]
+# No debug symbols.  The debugger is rarely used and debug symbols are
+# the single largest contributor to target/ bloat.
+debug = false
+# Disable incremental compilation.  Incremental writes many small files
+# to target/debug/incremental/ that accumulate quickly; the compile-time
+# benefit rarely outweighs the disk cost for typical workflows.
+incremental = false
+
+[profile.dev.package."*"]
+# Optimize dependencies even in dev builds.  Libraries like tokio and
+# axum are bottlenecks when unoptimized; this makes the program run at
+# near-release speed during development with minimal extra compile time
+# on subsequent incremental builds.
+opt-level = 3
+
+[profile.release]
+debug = false

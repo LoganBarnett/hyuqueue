@@ -1,11 +1,7 @@
-use super::AppState;
+use crate::web_base::AppState;
 use axum::{
+  extract::State, http::StatusCode, response::IntoResponse, routing::get, Json,
   Router,
-  extract::State,
-  http::StatusCode,
-  response::IntoResponse,
-  routing::get,
-  Json,
 };
 use chrono::Utc;
 use hyuqueue_core::queue::Queue;
