@@ -9,11 +9,13 @@
 
 use crate::config::LlmConfig;
 use hyuqueue_core::event::{Actor, EventType, Locality};
-use hyuqueue_lib::llm::{CompletionRequest, LlmClient, Message, OpenAiClient, Role};
-use hyuqueue_store::{Db, events, items};
+use hyuqueue_lib::llm::{
+  CompletionRequest, LlmClient, Message, OpenAiClient, Role,
+};
+use hyuqueue_store::{events, items, Db};
 use serde_json::json;
 use std::sync::Arc;
-use tokio::time::{Duration, sleep};
+use tokio::time::{sleep, Duration};
 use tracing::{error, info, warn};
 
 // Review worker runs less frequently than intake — it's the slower lane.
@@ -21,10 +23,8 @@ const POLL_INTERVAL: Duration = Duration::from_secs(10);
 const BATCH_SIZE: i64 = 5;
 
 pub async fn run(db: Db, llm_config: Arc<LlmConfig>) {
-  let client = OpenAiClient::new(
-    llm_config.base_url.clone(),
-    llm_config.api_key.clone(),
-  );
+  let client =
+    OpenAiClient::new(llm_config.base_url.clone(), llm_config.api_key.clone());
 
   info!("Review worker started");
 

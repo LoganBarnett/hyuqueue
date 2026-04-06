@@ -4,9 +4,9 @@
 //! is enqueued in outbound_signals. This worker drains that queue by POSTing
 //! to the originating instance's /api/v1/push endpoint.
 
-use hyuqueue_store::{Db, signals};
+use hyuqueue_store::{signals, Db};
 use serde_json::json;
-use tokio::time::{Duration, sleep};
+use tokio::time::{sleep, Duration};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 

@@ -15,21 +15,21 @@ use hyuqueue_core::{
   event::{Actor, EventType, Locality},
   item::ItemState,
 };
-use hyuqueue_lib::llm::{CompletionRequest, LlmClient, Message, OpenAiClient, Role};
-use hyuqueue_store::{Db, events, items};
+use hyuqueue_lib::llm::{
+  CompletionRequest, LlmClient, Message, OpenAiClient, Role,
+};
+use hyuqueue_store::{events, items, Db};
 use serde_json::json;
 use std::sync::Arc;
-use tokio::time::{Duration, sleep};
+use tokio::time::{sleep, Duration};
 use tracing::{error, info, warn};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 const BATCH_SIZE: i64 = 10;
 
 pub async fn run(db: Db, llm_config: Arc<LlmConfig>) {
-  let client = OpenAiClient::new(
-    llm_config.base_url.clone(),
-    llm_config.api_key.clone(),
-  );
+  let client =
+    OpenAiClient::new(llm_config.base_url.clone(), llm_config.api_key.clone());
 
   info!("Intake worker started");
 
@@ -100,8 +100,8 @@ async fn process_batch(
           .and_then(|c| c.message.content.as_deref())
           .unwrap_or("{}");
 
-        let decision: serde_json::Value =
-          serde_json::from_str(text).unwrap_or_else(|_| {
+        let decision: serde_json::Value = serde_json::from_str(text)
+          .unwrap_or_else(|_| {
             // Model didn't return valid JSON — escalate to human.
             json!({
               "confident": false,
