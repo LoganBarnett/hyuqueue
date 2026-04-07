@@ -69,6 +69,7 @@
       pkgs.treefmt
       pkgs.alejandra
       pkgs.prettier
+      pkgs.just
     ];
   in {
     devShells = forAllSystems (system: let
