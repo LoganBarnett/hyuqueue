@@ -9,12 +9,16 @@ build-elm:
 build-rust:
     cargo build --workspace
 
-# Run all tests (Elm compile check + Rust test suite).
-test: build-elm test-rust
+# Run all tests (Elm compile check + Rust + Emacs test suites).
+test: build-elm test-rust test-emacs
 
 # Run the Rust test suite.
 test-rust:
     cargo test --workspace
+
+# Run the Emacs ERT test suite.
+test-emacs:
+    emacs --batch -L emacs -l emacs/hyuqueue-tests.el -f ert-run-tests-batch-and-exit
 
 # Build Elm then run via cargo, forwarding all arguments.
 run *args: build-elm
