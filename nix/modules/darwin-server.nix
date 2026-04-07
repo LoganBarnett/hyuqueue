@@ -228,6 +228,7 @@ in {
 
     system.activationScripts.postActivation.text = let
       logDir = "/var/log/hyuqueue-server";
+      dbDir = dirOf cfg.dbPath;
       sockDir =
         if cfg.socket != null
         then dirOf cfg.socket
@@ -237,6 +238,9 @@ in {
         mkdir -p ${logDir}
         chown ${cfg.user}:${cfg.group} ${logDir}
         chmod 0750 ${logDir}
+        mkdir -p ${dbDir}
+        chown ${cfg.user}:${cfg.group} ${dbDir}
+        chmod 0750 ${dbDir}
       ''
       + lib.optionalString (sockDir != null) ''
         mkdir -p ${sockDir}
