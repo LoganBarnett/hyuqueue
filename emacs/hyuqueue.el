@@ -49,7 +49,9 @@
     (with-current-buffer (url-retrieve-synchronously url t)
       (goto-char (point-min))
       (re-search-forward "^$" nil t)
-      (json-parse-buffer :object-type 'alist :array-type 'list))))
+      (json-parse-buffer :object-type 'alist
+                         :array-type 'list
+                         :null-object nil))))
 
 (defun hyuqueue--post (path &optional body)
   "POST BODY (alist) to PATH on hyuqueue-server. Returns parsed JSON."
@@ -63,7 +65,9 @@
     (with-current-buffer (url-retrieve-synchronously url t)
       (goto-char (point-min))
       (re-search-forward "^$" nil t)
-      (json-parse-buffer :object-type 'alist :array-type 'list))))
+      (json-parse-buffer :object-type 'alist
+                         :array-type 'list
+                         :null-object nil))))
 
 ;; ── Core operations ───────────────────────────────────────────────────────────
 
