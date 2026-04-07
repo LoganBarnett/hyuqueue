@@ -21,9 +21,9 @@ use uuid::Uuid;
 pub fn router() -> Router<AppState> {
   Router::new()
     .route("/", get(list_items).post(create_item))
-    .route("/:id", get(get_item))
-    .route("/:id/action", post(invoke_action))
-    .route("/:id/ack", post(ack_item))
+    .route("/{id}", get(get_item))
+    .route("/{id}/action", post(invoke_action))
+    .route("/{id}/ack", post(ack_item))
     .route("/next", get(next_item))
     .route("/count", get(queue_count))
 }

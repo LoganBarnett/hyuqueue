@@ -361,6 +361,105 @@ async fn test_auth_login_redirects_with_oidc() {
   );
 }
 
+// ── item API path-parameter tests ────────────────────────────────────────────
+
+/// Build a router that includes the API routes, mirroring production.
+fn app_with_api(state: AppState) -> Router {
+  use hyuqueue_server::api;
+
+  let session_store = MemoryStore::default();
+  let session_layer = SessionManagerLayer::new(session_store)
+    .with_secure(false)
+    .with_same_site(SameSite::Lax);
+
+  let api_router = api::api_router().with_state(state.clone());
+
+  base_router(state)
+    .nest("/api/v1", api_router)
+    .layer(session_layer)
+}
+
+/// Create an item via POST then fetch it by ID via GET.
+/// This exercises the `{id}` path parameter in the items router.
+#[tokio::test]
+async fn test_get_item_by_id() {
+  use hyuqueue_core::queue::Queue;
+
+  let state = state_without_frontend().await;
+
+  // Seed a queue so we have a valid queue_id.
+  let queue = Queue {
+    id: uuid::Uuid::new_v4(),
+    name: "test-queue".to_string(),
+    tags: vec![],
+    config: serde_json::json!({}),
+    created_at: chrono::Utc::now(),
+    updated_at: chrono::Utc::now(),
+  };
+  hyuqueue_store::queues::insert(&state.db, &queue)
+    .await
+    .unwrap();
+
+  let app = app_with_api(state);
+
+  // POST to create an item.
+  let create_body = serde_json::json!({
+    "title": "test item",
+    "source": "integration-test",
+    "queue_id": queue.id,
+  });
+
+  let create_resp = app
+    .clone()
+    .oneshot(
+      Request::builder()
+        .method("POST")
+        .uri("/api/v1/items")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&create_body).unwrap()))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+  assert_eq!(
+    create_resp.status(),
+    StatusCode::CREATED,
+    "POST /api/v1/items should return 201"
+  );
+
+  let body = axum::body::to_bytes(create_resp.into_body(), usize::MAX)
+    .await
+    .unwrap();
+  let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+  let item_id = created["item"]["id"]
+    .as_str()
+    .expect("response should contain item.id");
+
+  // GET the item by ID.
+  let get_resp = app
+    .oneshot(
+      Request::builder()
+        .uri(format!("/api/v1/items/{item_id}"))
+        .body(Body::empty())
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+  assert_eq!(
+    get_resp.status(),
+    StatusCode::OK,
+    "GET /api/v1/items/{{id}} should return 200"
+  );
+
+  let body = axum::body::to_bytes(get_resp.into_body(), usize::MAX)
+    .await
+    .unwrap();
+  let fetched: serde_json::Value = serde_json::from_slice(&body).unwrap();
+  assert_eq!(fetched["item"]["id"], item_id);
+}
+
 // ── config tests ─────────────────────────────────────────────────────────────
 
 #[test]
