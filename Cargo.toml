@@ -77,7 +77,7 @@ prometheus = "0.13"
 
 # OpenAPI
 aide = { version = "0.15", features = ["axum", "axum-json", "axum-query", "scalar", "macros"] }
-schemars = "0.9"
+schemars = "1.2"
 
 # Authentication
 openidconnect = { version = "3", features = ["reqwest"] }
