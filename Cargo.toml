@@ -73,7 +73,7 @@ ratatui = "0.30"
 crossterm = "0.28"
 
 # OpenMetrics/Prometheus
-prometheus = "0.13"
+prometheus = "0.14"
 
 # OpenAPI
 aide = { version = "0.15", features = ["axum", "axum-json", "axum-query", "scalar", "macros"] }
