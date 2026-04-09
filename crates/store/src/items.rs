@@ -109,17 +109,15 @@ pub async fn insert(db: &Db, item: &Item) -> Result<(), ItemsError> {
 }
 
 pub async fn get(db: &Db, id: Uuid) -> Result<Item, ItemsError> {
-  let row = sqlx::query_as::<_, ItemRow>(
-    "SELECT * FROM items WHERE id = ?",
-  )
-  .bind(id.to_string())
-  .fetch_optional(db.pool())
-  .await
-  .map_err(|source| ItemsError::Db {
-    context: "fetching item",
-    source,
-  })?
-  .ok_or(ItemsError::NotFound(id))?;
+  let row = sqlx::query_as::<_, ItemRow>("SELECT * FROM items WHERE id = ?")
+    .bind(id.to_string())
+    .fetch_optional(db.pool())
+    .await
+    .map_err(|source| ItemsError::Db {
+      context: "fetching item",
+      source,
+    })?
+    .ok_or(ItemsError::NotFound(id))?;
 
   row.into_item().map_err(ItemsError::Deserialize)
 }
@@ -166,18 +164,16 @@ pub async fn update_state(
   state: ItemState,
 ) -> Result<(), ItemsError> {
   let now = Utc::now().to_rfc3339();
-  sqlx::query(
-    "UPDATE items SET state = ?, updated_at = ? WHERE id = ?",
-  )
-  .bind(state.to_string())
-  .bind(&now)
-  .bind(id.to_string())
-  .execute(db.pool())
-  .await
-  .map_err(|source| ItemsError::Db {
-    context: "updating item state",
-    source,
-  })?;
+  sqlx::query("UPDATE items SET state = ?, updated_at = ? WHERE id = ?")
+    .bind(state.to_string())
+    .bind(&now)
+    .bind(id.to_string())
+    .execute(db.pool())
+    .await
+    .map_err(|source| ItemsError::Db {
+      context: "updating item state",
+      source,
+    })?;
   Ok(())
 }
 

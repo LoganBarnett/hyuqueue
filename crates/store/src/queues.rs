@@ -37,14 +37,8 @@ impl QueueRow {
       name: self.name,
       tags: serde_json::from_str(&self.tags)?,
       config: serde_json::from_str(&self.config)?,
-      created_at: self
-        .created_at
-        .parse()
-        .unwrap_or_else(|_| Utc::now()),
-      updated_at: self
-        .updated_at
-        .parse()
-        .unwrap_or_else(|_| Utc::now()),
+      created_at: self.created_at.parse().unwrap_or_else(|_| Utc::now()),
+      updated_at: self.updated_at.parse().unwrap_or_else(|_| Utc::now()),
     })
   }
 }
@@ -71,15 +65,14 @@ pub async fn insert(db: &Db, queue: &Queue) -> Result<(), QueuesError> {
 }
 
 pub async fn list(db: &Db) -> Result<Vec<Queue>, QueuesError> {
-  let rows = sqlx::query_as::<_, QueueRow>(
-    "SELECT * FROM queues ORDER BY name",
-  )
-  .fetch_all(db.pool())
-  .await
-  .map_err(|source| QueuesError::Db {
-    context: "listing queues",
-    source,
-  })?;
+  let rows =
+    sqlx::query_as::<_, QueueRow>("SELECT * FROM queues ORDER BY name")
+      .fetch_all(db.pool())
+      .await
+      .map_err(|source| QueuesError::Db {
+        context: "listing queues",
+        source,
+      })?;
 
   rows
     .into_iter()
@@ -91,16 +84,15 @@ pub async fn get_by_name(
   db: &Db,
   name: &str,
 ) -> Result<Option<Queue>, QueuesError> {
-  let row = sqlx::query_as::<_, QueueRow>(
-    "SELECT * FROM queues WHERE name = ?",
-  )
-  .bind(name)
-  .fetch_optional(db.pool())
-  .await
-  .map_err(|source| QueuesError::Db {
-    context: "fetching queue by name",
-    source,
-  })?;
+  let row =
+    sqlx::query_as::<_, QueueRow>("SELECT * FROM queues WHERE name = ?")
+      .bind(name)
+      .fetch_optional(db.pool())
+      .await
+      .map_err(|source| QueuesError::Db {
+        context: "fetching queue by name",
+        source,
+      })?;
 
   row
     .map(|r| r.into_queue().map_err(QueuesError::Deserialize))

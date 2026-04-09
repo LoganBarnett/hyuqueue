@@ -1,0 +1,251 @@
+#+title:     Building a Topic
+#+language:  en
+
+* Overview
+
+A *topic* is hyuqueue's integration unit.  It represents a domain of
+capability — not just a data source, but a system that can produce items,
+declare actions on those items, offer actions on /any/ item, and execute
+those actions when invoked.
+
+Topics are compiled into the server binary (dynamic loading is deferred).
+Each topic implements the ~Topic~ trait from ~hyuqueue-core~.
+
+* The Topic trait
+
+#+begin_src rust :exports code
+#[async_trait]
+pub trait Topic: Send + Sync {
+  /// Stable identifier, e.g. "jira", "email", "orgmode".
+  fn id(&self) -> &str;
+
+  /// Human-readable name shown in the UI.
+  fn display_name(&self) -> &str;
+
+  /// Poll an external source for new items.
+  /// Called periodically by the ingest worker.
+  async fn ingest(
+    &self,
+    config: &serde_json::Value,
+  ) -> Result<Vec<IngestItem>, TopicError> {
+    Ok(vec![])
+  }
+
+  /// Activities for items whose source_topic_id matches this topic.
+  fn item_activities(&self) -> Vec<Activity> {
+    vec![]
+  }
+
+  /// Activities available on every item, regardless of source.
+  fn global_activities(&self) -> Vec<Activity> {
+    vec![]
+  }
+
+  /// Execute a local activity invocation.
+  async fn execute(
+    &self,
+    invocation: &ActivityInvocation,
+    item_id: uuid::Uuid,
+  ) -> Result<Event, TopicError>;
+}
+#+end_src
+
+Every method except ~id~, ~display_name~, and ~execute~ has a default
+no-op implementation.  A topic only needs to implement what it actually
+provides.
+
+* Minimal example: the heartbeat topic
+
+The heartbeat topic proves the ingest pipeline end-to-end.  It produces
+one synthetic item per cycle and supports no activities.
+
+#+begin_src rust :exports code
+pub struct HeartbeatTopic;
+
+#[async_trait]
+impl Topic for HeartbeatTopic {
+  fn id(&self) -> &str {
+    "heartbeat"
+  }
+
+  fn display_name(&self) -> &str {
+    "Heartbeat"
+  }
+
+  async fn ingest(
+    &self,
+    _config: &serde_json::Value,
+  ) -> Result<Vec<IngestItem>, TopicError> {
+    Ok(vec![IngestItem {
+      title: "Heartbeat".to_string(),
+      source: "heartbeat".to_string(),
+      body: None,
+      metadata: json!({ "timestamp": Utc::now().to_rfc3339() }),
+    }])
+  }
+
+  async fn execute(
+    &self,
+    invocation: &ActivityInvocation,
+    _item_id: uuid::Uuid,
+  ) -> Result<Event, TopicError> {
+    Err(TopicError::UnsupportedActivity(
+      invocation.activity_id.clone(),
+      self.id().to_string(),
+    ))
+  }
+}
+#+end_src
+
+* Step by step
+
+** 1. Create the module
+
+Add a file under ~crates/server/src/topics/~.  The naming convention is
+the topic's stable ID, e.g. ~jira.rs~ for the Jira topic.
+
+** 2. Implement the Topic trait
+
+*** Required: identity
+
+~id()~ returns the stable string identifier.  This is stored in
+~items.source_topic_id~ and used by the registry to match config entries
+to implementations.
+
+~display_name()~ returns a human-readable label for the UI.
+
+*** Optional: ingest
+
+Override ~ingest()~ if the topic pulls data from an external system.
+The ingest worker calls this method on a 30-second interval for each
+registered topic.
+
+~ingest()~ receives the topic's config (a ~serde_json::Value~ parsed
+from the TOML config file).  Return a ~Vec<IngestItem>~:
+
+#+begin_src rust :exports code
+pub struct IngestItem {
+  pub title: String,
+  pub source: String,
+  pub body: Option<String>,
+  pub metadata: serde_json::Value,
+}
+#+end_src
+
+The server handles event creation and database insertion — the topic
+stays pure.
+
+*** Optional: activities
+
+Topics can declare two kinds of activities:
+
+- *Item activities* (~item_activities~): only available on items whose
+  ~source_topic_id~ matches this topic.  These travel with the item.
+- *Global activities* (~global_activities~): available on /every/ item
+  in the queue, regardless of source.
+
+Each activity is an ~Activity~ struct:
+
+#+begin_src rust :exports code
+pub struct Activity {
+  pub id: String,
+  pub label: String,
+  pub key: char,
+  pub executor: ActivityExecutor,
+  pub params: Vec<ActivityParam>,
+}
+#+end_src
+
+~executor~ is either ~Local~ (run on this machine via the topic) or
+~Upstream~ (package as a signal and route via ~delegate_from~).
+
+*** Required: execute
+
+~execute()~ handles local activity invocations.  It receives the
+~ActivityInvocation~ (activity ID + parameters) and the ~item_id~.
+Return an ~Event~ describing what happened.
+
+If the topic does not support any activities, return
+~TopicError::UnsupportedActivity~ for all invocations (as the heartbeat
+topic does).
+
+** 3. Register in the topic registry
+
+Edit ~crates/server/src/topics/mod.rs~:
+
+1. Add ~pub mod your_topic;~.
+2. In ~build_registry~, add a match arm mapping the topic ID string to
+   your struct:
+
+#+begin_src rust :exports code
+"your_topic" => Arc::new(YourTopic),
+#+end_src
+
+** 4. Add configuration
+
+Topics are configured in ~config.toml~ under a ~[[topics]]~ array:
+
+#+begin_src toml :exports code
+[[topics]]
+id = "your_topic"
+queue = "inbox"
+
+[topics.config]
+api_url = "https://api.example.com"
+api_key_cmd = "cat /run/secrets/your-api-key"
+#+end_src
+
+- ~id~ must match the string returned by ~Topic::id()~.
+- ~queue~ is the name of the queue this topic's items land in.
+- ~config~ is an arbitrary TOML table passed to ~ingest()~ as JSON.
+
+*** Secret resolution
+
+Any key ending in ~_cmd~ is resolved at startup: the value is executed
+as a shell command and its stdout replaces the base key.  In the example
+above, ~api_key_cmd~ becomes ~api_key~ containing the file contents.
+This keeps secrets out of the config file.
+
+* Topic data persistence
+
+Topics can persist state (cursors, sync tokens, etc.) via the
+~topic_data~ projection.  The store module provides:
+
+#+begin_src rust :exports code
+topic_data::get_all(db, topic_id)
+  -> Result<HashMap<String, serde_json::Value>>
+
+topic_data::upsert(db, topic_id, key, value)
+  -> Result<()>
+#+end_src
+
+To record a state change:
+
+1. Append a ~TopicDataUpdated~ event with a ~TopicDataPayload~.
+2. Call ~topic_data::upsert~ to update the projection.
+
+Event first, projection second — the event log is the source of truth.
+
+* Error handling
+
+~TopicError~ has three variants:
+
+| Variant                | When to use                                |
+|------------------------+--------------------------------------------|
+| ~UnsupportedActivity~  | Activity ID is not handled by this topic   |
+| ~Execution~            | An activity failed during execution        |
+| ~Configuration~        | Topic config is invalid or missing a field |
+
+The ingest worker logs errors and continues to the next topic — a
+single topic failure does not block others.
+
+* Activity palette
+
+The UI presents activities from three sources, merged into one palette:
+
+1. *Item-scoped activities* from the item's source topic.
+2. *Global activities* from all registered topics.
+3. *Universal actions* (ack) provided by the system.
+
+The keyboard shortcut (~Activity.key~) must not conflict with vim
+bindings or other activities in the palette.
