@@ -12,7 +12,26 @@ jobs:
     runs-on: ubuntu-latest
     if: github.actor == 'dependabot[bot]'
     steps:
+      - name: Fetch changed files
+        id: files
+        run: |
+          FILES=$(gh pr diff "$PR_URL" --name-only)
+          echo "$FILES"
+          # Fail if any file outside Cargo.toml / Cargo.lock was touched.
+          NON_CARGO=$(echo "$FILES" | grep -v '^Cargo\.\(toml\|lock\)$' || true)
+          if [ -n "$NON_CARGO" ]; then
+            echo "unexpected_files=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Dependabot touched non-Cargo files — skipping auto-merge"
+            echo "$NON_CARGO"
+          else
+            echo "unexpected_files=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Enable auto-merge
+        if: steps.files.outputs.unexpected_files == 'false'
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
