@@ -109,9 +109,9 @@ together yields a ~Config~ that represents a completely valid configuration.
 
 ** Event sourcing
 
-~item_events~ is the source of truth.  The ~items~ table is a materialized
-projection.  All state changes (create, ack, refile, LLM analysis) must be
-recorded as events.
+~events~ is the source of truth.  The ~items~ and ~topic_data~ tables are
+materialized projections.  All state changes (create, ack, refile, LLM
+analysis, topic data updates) must be recorded as events.
 
 ** Worker patterns
 

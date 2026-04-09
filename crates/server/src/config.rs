@@ -4,6 +4,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use thiserror::Error;
 use tokio_listener::ListenerAddress;
+use tracing::warn;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -30,6 +31,16 @@ pub enum ConfigError {
   InvalidListenAddress {
     address: String,
     reason: &'static str,
+  },
+
+  #[error(
+    "Failed to run secret command for topic '{topic}' key '{key}': \
+     {reason}"
+  )]
+  SecretCommand {
+    topic: String,
+    key: String,
+    reason: String,
   },
 }
 
@@ -79,6 +90,13 @@ pub struct CliRaw {
   pub oidc_client_secret_file: Option<PathBuf>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct TopicConfigRaw {
+  pub id: String,
+  pub queue: String,
+  pub config: Option<toml::Value>,
+}
+
 #[derive(Debug, Deserialize, Default)]
 pub struct ConfigFileRaw {
   pub log_level: Option<String>,
@@ -91,6 +109,7 @@ pub struct ConfigFileRaw {
   pub oidc_client_id: Option<String>,
   pub oidc_client_secret_file: Option<PathBuf>,
   pub llm: Option<LlmConfigRaw>,
+  pub topics: Option<Vec<TopicConfigRaw>>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -131,6 +150,13 @@ pub struct OidcConfig {
   pub client_secret: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct TopicConfig {
+  pub id: String,
+  pub queue_name: String,
+  pub config: serde_json::Value,
+}
+
 #[derive(Debug)]
 pub struct Config {
   pub log_level: LogLevel,
@@ -141,6 +167,7 @@ pub struct Config {
   pub base_url: String,
   pub oidc: Option<OidcConfig>,
   pub llm: LlmConfig,
+  pub topics: Vec<TopicConfig>,
 }
 
 impl Config {
@@ -259,6 +286,8 @@ impl Config {
       }
     };
 
+    let topics = resolve_topics(file.topics.unwrap_or_default())?;
+
     Ok(Config {
       log_level,
       log_format,
@@ -271,6 +300,93 @@ impl Config {
       base_url,
       oidc,
       llm,
+      topics,
     })
   }
+}
+
+/// Resolve `_cmd` suffixed keys in a TOML table: for every key ending in
+/// `_cmd`, run the command and store stdout under the base key.
+fn resolve_cmd_keys(
+  topic_id: &str,
+  table: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(), ConfigError> {
+  let cmd_keys: Vec<String> = table
+    .keys()
+    .filter(|k| k.ends_with("_cmd"))
+    .cloned()
+    .collect();
+
+  for cmd_key in cmd_keys {
+    let base_key = cmd_key.trim_end_matches("_cmd").to_string();
+    let cmd = table
+      .get(&cmd_key)
+      .and_then(|v| v.as_str())
+      .unwrap_or("")
+      .to_string();
+
+    if cmd.is_empty() {
+      continue;
+    }
+
+    let output = std::process::Command::new("sh")
+      .args(["-c", &cmd])
+      .output()
+      .map_err(|e| ConfigError::SecretCommand {
+        topic: topic_id.to_string(),
+        key: cmd_key.clone(),
+        reason: e.to_string(),
+      })?;
+
+    if !output.status.success() {
+      let stderr = String::from_utf8_lossy(&output.stderr);
+      return Err(ConfigError::SecretCommand {
+        topic: topic_id.to_string(),
+        key: cmd_key.clone(),
+        reason: format!("exited {}: {}", output.status, stderr.trim()),
+      });
+    }
+
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    table.insert(base_key, serde_json::Value::String(value));
+    table.remove(&cmd_key);
+  }
+
+  Ok(())
+}
+
+/// Convert raw TOML topic configs into validated `TopicConfig` values,
+/// resolving any `_cmd` keys along the way.
+fn resolve_topics(
+  raw: Vec<TopicConfigRaw>,
+) -> Result<Vec<TopicConfig>, ConfigError> {
+  raw
+    .into_iter()
+    .map(|t| {
+      let mut json_config = t
+        .config
+        .map(|v| {
+          serde_json::to_value(v)
+            .map_err(|e| ConfigError::Validation(e.to_string()))
+        })
+        .transpose()?
+        .unwrap_or(serde_json::Value::Object(Default::default()));
+
+      if let Some(obj) = json_config.as_object_mut() {
+        resolve_cmd_keys(&t.id, obj)?;
+      } else {
+        warn!(
+          topic = %t.id,
+          "Topic config is not a table, ignoring _cmd resolution"
+        );
+      }
+
+      Ok(TopicConfig {
+        id: t.id,
+        queue_name: t.queue,
+        config: json_config,
+      })
+    })
+    .collect()
 }

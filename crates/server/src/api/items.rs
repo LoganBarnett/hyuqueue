@@ -105,7 +105,7 @@ async fn create_item(
   match items::insert(&state.db, &item).await {
     Ok(()) => {
       // Append ItemCreated event.
-      let event = events::new_event(
+      let event = events::new_item_event(
         item.id,
         EventType::ItemCreated,
         Actor::System,
@@ -165,7 +165,7 @@ async fn invoke_action(
   // Record the action as an event. Actual execution is delegated to the
   // topic system (not yet wired in the server — topics are registered at
   // startup and called from worker tasks or directly here).
-  let event = events::new_event(
+  let event = events::new_item_event(
     id,
     EventType::ActionTaken,
     Actor::Human,
@@ -194,7 +194,7 @@ async fn ack_item(
   Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
   // Append the ack event.
-  let event = events::new_event(
+  let event = events::new_item_event(
     id,
     EventType::ActionTaken,
     Actor::Human,

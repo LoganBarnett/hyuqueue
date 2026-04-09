@@ -56,7 +56,7 @@ pub async fn handle_push(
       .into_response();
   }
 
-  let event = events::new_event(
+  let event = events::new_item_event(
     item.id,
     EventType::ItemCreated,
     Actor::System,

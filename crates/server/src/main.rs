@@ -14,7 +14,7 @@
 mod logging;
 mod systemd;
 
-use hyuqueue_server::{api, auth, config, web_base, workers};
+use hyuqueue_server::{api, auth, config, topics, web_base, workers};
 use hyuqueue_store::Db;
 
 use axum::{routing::get, Router};
@@ -76,15 +76,22 @@ async fn main() -> Result<(), ApplicationError> {
 
   info!("Database ready");
 
+  let topic_registry =
+    Arc::new(topics::build_registry(&config.topics, &db).await);
+
   let llm_config = Arc::new(config.llm.clone());
-  let _workers = workers::spawn_all(db.clone(), llm_config);
+  let _workers =
+    workers::spawn_all(db.clone(), llm_config, topic_registry.clone());
 
   info!("Workers started");
 
-  let state = AppState::init(&config, db).await.map_err(|e| {
-    error!("Failed to initialize application state: {}", e);
-    ApplicationError::StateInit(e)
-  })?;
+  let state =
+    AppState::init(&config, db, topic_registry)
+      .await
+      .map_err(|e| {
+        error!("Failed to initialize application state: {}", e);
+        ApplicationError::StateInit(e)
+      })?;
 
   let app = create_app(state);
 

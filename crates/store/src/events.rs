@@ -1,6 +1,6 @@
 use crate::db::Db;
 use chrono::Utc;
-use hyuqueue_core::event::ItemEvent;
+use hyuqueue_core::event::Event;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -17,14 +17,13 @@ pub enum EventsError {
   Deserialize(#[from] serde_json::Error),
 }
 
-pub async fn append(db: &Db, event: &ItemEvent) -> Result<(), EventsError> {
+pub async fn append(db: &Db, event: &Event) -> Result<(), EventsError> {
   sqlx::query(
-    "INSERT INTO item_events
-       (id, item_id, event_type, actor, locality, payload, created_at)
-     VALUES (?,?,?,?,?,?,?)",
+    "INSERT INTO events
+       (id, event_type, actor, locality, payload, created_at)
+     VALUES (?,?,?,?,?,?)",
   )
   .bind(event.id.to_string())
-  .bind(event.item_id.to_string())
   .bind(
     serde_json::to_string(&event.event_type)
       .unwrap()
@@ -59,7 +58,9 @@ pub async fn for_item(
   item_id: Uuid,
 ) -> Result<Vec<serde_json::Value>, EventsError> {
   let rows: Vec<(String,)> = sqlx::query_as(
-    "SELECT payload FROM item_events WHERE item_id = ? ORDER BY created_at ASC",
+    "SELECT payload FROM events
+     WHERE json_extract(payload, '$.item_id') = ?
+     ORDER BY created_at ASC",
   )
   .bind(item_id.to_string())
   .fetch_all(db.pool())
@@ -86,8 +87,9 @@ pub async fn items_awaiting_review(
     "SELECT i.id FROM items i
      WHERE i.state = 'done'
        AND NOT EXISTS (
-         SELECT 1 FROM item_events e
-         WHERE e.item_id = i.id AND e.event_type = 'review_llm_analysis'
+         SELECT 1 FROM events e
+         WHERE e.event_type = 'review_llm_analysis'
+           AND json_extract(e.payload, '$.item_id') = i.id
        )
      ORDER BY i.updated_at ASC
      LIMIT ?",
@@ -133,21 +135,42 @@ pub async fn items_awaiting_intake(
   )
 }
 
-/// Convenience: build a new ItemEvent with a fresh id and current timestamp.
+/// Build a new Event with a fresh id and current timestamp.
 pub fn new_event(
-  item_id: Uuid,
   event_type: hyuqueue_core::event::EventType,
   actor: hyuqueue_core::event::Actor,
   locality: hyuqueue_core::event::Locality,
   payload: serde_json::Value,
-) -> ItemEvent {
-  ItemEvent {
+) -> Event {
+  Event {
     id: Uuid::new_v4(),
-    item_id,
     event_type,
     actor,
     locality,
     payload,
     created_at: Utc::now(),
   }
+}
+
+/// Convenience: build an item-scoped Event, merging `item_id` into
+/// the payload automatically.
+pub fn new_item_event(
+  item_id: Uuid,
+  event_type: hyuqueue_core::event::EventType,
+  actor: hyuqueue_core::event::Actor,
+  locality: hyuqueue_core::event::Locality,
+  extra: serde_json::Value,
+) -> Event {
+  let payload = match extra {
+    serde_json::Value::Object(mut map) => {
+      map.insert(
+        "item_id".to_string(),
+        serde_json::Value::String(item_id.to_string()),
+      );
+      serde_json::Value::Object(map)
+    }
+    _ => serde_json::json!({ "item_id": item_id.to_string() }),
+  };
+
+  new_event(event_type, actor, locality, payload)
 }

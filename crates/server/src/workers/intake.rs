@@ -120,7 +120,7 @@ async fn process_batch(
           ItemState::HumanPending
         };
 
-        let event = events::new_event(
+        let event = events::new_item_event(
           item_id,
           EventType::IntakeLlmAnalysis,
           Actor::IntakeLlm,
@@ -138,7 +138,7 @@ async fn process_batch(
       Err(e) => {
         warn!(item_id = %item_id, "Intake LLM call failed: {e}. Escalating to human.");
         // On LLM error, always escalate — never silently drop.
-        let event = events::new_event(
+        let event = events::new_item_event(
           item_id,
           EventType::IntakeLlmAnalysis,
           Actor::IntakeLlm,

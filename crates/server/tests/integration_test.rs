@@ -16,6 +16,7 @@ use tower::ServiceExt;
 use tower_sessions::{cookie::SameSite, MemoryStore, SessionManagerLayer};
 
 use hyuqueue_server::config::LlmConfig;
+use hyuqueue_server::topics::TopicRegistry;
 
 // ── state helpers ────────────────────────────────────────────────────────────
 
@@ -41,6 +42,7 @@ async fn stub_state_no_auth(frontend_path: PathBuf) -> AppState {
       review_model: "llama3.2".to_string(),
       api_key: None,
     }),
+    topics: Arc::new(TopicRegistry::empty()),
   }
 }
 
@@ -95,6 +97,7 @@ async fn stub_state_with_auth(frontend_path: PathBuf) -> AppState {
       review_model: "llama3.2".to_string(),
       api_key: None,
     }),
+    topics: Arc::new(TopicRegistry::empty()),
   }
 }
 

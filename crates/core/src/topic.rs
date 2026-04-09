@@ -1,7 +1,18 @@
 use crate::activity::{Activity, ActivityInvocation};
-use crate::event::ItemEvent;
+use crate::event::Event;
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+/// An item produced by a topic's `ingest()` method. The core crate stays
+/// pure — the server worker handles DB insertion and event creation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestItem {
+  pub title: String,
+  pub source: String,
+  pub body: Option<String>,
+  pub metadata: serde_json::Value,
+}
 
 /// The plugin interface. A topic is a domain of integration capability.
 ///
@@ -21,6 +32,15 @@ pub trait Topic: Send + Sync {
   fn id(&self) -> &str;
   fn display_name(&self) -> &str;
 
+  /// Poll an external source for new items. Called periodically by the
+  /// ingest worker. Returns an empty vec by default.
+  async fn ingest(
+    &self,
+    _config: &serde_json::Value,
+  ) -> Result<Vec<IngestItem>, TopicError> {
+    Ok(vec![])
+  }
+
   /// Activities available on items whose source_topic_id matches this topic.
   fn item_activities(&self) -> Vec<Activity> {
     vec![]
@@ -36,7 +56,7 @@ pub trait Topic: Send + Sync {
     &self,
     invocation: &ActivityInvocation,
     item_id: uuid::Uuid,
-  ) -> Result<ItemEvent, TopicError>;
+  ) -> Result<Event, TopicError>;
 }
 
 #[derive(Debug, Error)]

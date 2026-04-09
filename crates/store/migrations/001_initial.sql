@@ -1,6 +1,6 @@
 -- hyuqueue initial schema
 -- SQLite with JSON columns for flexible data.
--- item_events is the source of truth; items is a materialized projection.
+-- events is the source of truth; items and topic_data are projections.
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
@@ -43,11 +43,10 @@ CREATE INDEX IF NOT EXISTS idx_items_queue_id ON items(queue_id);
 CREATE INDEX IF NOT EXISTS idx_items_state    ON items(state);
 CREATE INDEX IF NOT EXISTS idx_items_source   ON items(source);
 
--- ── Item events (source of truth) ────────────────────────────────────────────
+-- ── Events (source of truth) ─────────────────────────────────────────────────
 
-CREATE TABLE IF NOT EXISTS item_events (
+CREATE TABLE IF NOT EXISTS events (
   id         TEXT PRIMARY KEY,
-  item_id    TEXT NOT NULL REFERENCES items(id),
   event_type TEXT NOT NULL,
   actor      TEXT NOT NULL,
   locality   TEXT NOT NULL DEFAULT 'local',
@@ -55,8 +54,17 @@ CREATE TABLE IF NOT EXISTS item_events (
   created_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_item_events_item_id ON item_events(item_id);
-CREATE INDEX IF NOT EXISTS idx_item_events_type    ON item_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
+
+-- ── Topic data (projection) ─────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS topic_data (
+  topic_id   TEXT NOT NULL,
+  key        TEXT NOT NULL,
+  value      TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (topic_id, key)
+);
 
 -- ── Source policies ───────────────────────────────────────────────────────────
 

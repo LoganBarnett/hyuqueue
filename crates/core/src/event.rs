@@ -1,16 +1,15 @@
-//! The event log — the source of truth for all item state.
+//! The event log — the source of truth for all state changes.
 //!
-//! The `items` table is a materialized projection of these events.
-//! When in doubt, trust the events.
+//! The `items` and `topic_data` tables are materialized projections
+//! of these events. When in doubt, trust the events.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ItemEvent {
+pub struct Event {
   pub id: Uuid,
-  pub item_id: Uuid,
   pub event_type: EventType,
   pub actor: Actor,
   pub locality: Locality,
@@ -40,6 +39,8 @@ pub enum EventType {
   UpstreamSignalReceived,
   /// A source policy was updated (possibly affecting future intake routing).
   PolicyUpdated,
+  /// A topic's persistent key-value data was updated.
+  TopicDataUpdated,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,11 +64,13 @@ pub enum Locality {
 }
 
 // ── Typed payloads ────────────────────────────────────────────────────────────
-// These are serialized into ItemEvent.payload as JSON.
+// These are serialized into Event.payload as JSON.
+// Item-scoped payloads carry an explicit item_id field.
 
 /// Payload for EventType::IntakeLlmAnalysis
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IntakeLlmPayload {
+  pub item_id: Uuid,
   pub model: String,
   pub confident: bool,
   /// Why the LLM was uncertain (shown to human in queue).
@@ -79,6 +82,7 @@ pub struct IntakeLlmPayload {
 /// Payload for EventType::ActionTaken
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ActionTakenPayload {
+  pub item_id: Uuid,
   pub activity_id: String,
   pub params: serde_json::Value,
   /// Human-readable description of what happened (e.g. "refiled to ~/notes.org::Inbox").
@@ -88,10 +92,19 @@ pub struct ActionTakenPayload {
 /// Payload for EventType::ReviewLlmAnalysis
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReviewLlmPayload {
+  pub item_id: Uuid,
   pub model: String,
   /// Tool calls the review LLM made to query item history.
   pub queries_run: Vec<serde_json::Value>,
   pub reasoning: Option<String>,
   /// If Some, a suggestion item was created.
   pub suggestion_item_id: Option<Uuid>,
+}
+
+/// Payload for EventType::TopicDataUpdated
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TopicDataPayload {
+  pub topic_id: String,
+  pub key: String,
+  pub value: serde_json::Value,
 }

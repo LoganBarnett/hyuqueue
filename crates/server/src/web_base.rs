@@ -27,6 +27,7 @@ use tracing::info;
 use crate::{
   auth,
   config::{Config, LlmConfig},
+  topics::TopicRegistry,
 };
 use hyuqueue_store::Db;
 
@@ -40,6 +41,7 @@ pub struct AppState {
   pub frontend_path: PathBuf,
   pub oidc_client: Option<Arc<CoreClient>>,
   pub llm_config: Arc<LlmConfig>,
+  pub topics: Arc<TopicRegistry>,
 }
 
 #[derive(Debug, Error)]
@@ -63,7 +65,11 @@ impl AppState {
   ///
   /// Performs OIDC discovery when OIDC is configured (an async HTTP call).
   /// When OIDC fields are absent the server starts without authentication.
-  pub async fn init(config: &Config, db: Db) -> Result<Self, AppStateError> {
+  pub async fn init(
+    config: &Config,
+    db: Db,
+    topic_registry: Arc<TopicRegistry>,
+  ) -> Result<Self, AppStateError> {
     let registry = Registry::new();
     let request_counter =
       IntCounter::new("http_requests_total", "Total HTTP requests")
@@ -116,6 +122,7 @@ impl AppState {
       frontend_path: config.frontend_path.clone(),
       oidc_client,
       llm_config: Arc::new(config.llm.clone()),
+      topics: topic_registry,
     })
   }
 
@@ -141,6 +148,7 @@ impl AppState {
         review_model: "llama3.2".to_string(),
         api_key: None,
       }),
+      topics: Arc::new(TopicRegistry::empty()),
     }
   }
 }

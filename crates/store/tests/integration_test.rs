@@ -107,7 +107,7 @@ async fn test_event_append_and_query() {
   items::insert(&db, &item).await.unwrap();
 
   // Append an event.
-  let event = events::new_event(
+  let event = events::new_item_event(
     item.id,
     EventType::ItemCreated,
     Actor::System,

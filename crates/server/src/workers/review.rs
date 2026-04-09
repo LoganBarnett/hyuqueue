@@ -153,7 +153,7 @@ async fn process_batch(
           let sid = suggestion.id;
           let _ = items::insert(db, &suggestion).await;
 
-          let creation_event = events::new_event(
+          let creation_event = events::new_item_event(
             sid,
             EventType::ItemCreated,
             Actor::ReviewLlm,
@@ -167,7 +167,7 @@ async fn process_batch(
           None
         };
 
-        let review_event = events::new_event(
+        let review_event = events::new_item_event(
           item_id,
           EventType::ReviewLlmAnalysis,
           Actor::ReviewLlm,
@@ -185,7 +185,7 @@ async fn process_batch(
         warn!(item_id = %item_id, "Review LLM call failed: {e}");
         // Log the failure but don't retry immediately — the item remains
         // in the "awaiting review" pool and will be picked up next cycle.
-        let event = events::new_event(
+        let event = events::new_item_event(
           item_id,
           EventType::ReviewLlmAnalysis,
           Actor::ReviewLlm,
