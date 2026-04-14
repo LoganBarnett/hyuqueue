@@ -27,7 +27,7 @@ tracing-subscriber = { version = "0.3", features = [
 tracing-journald = "0.3"
 
 # Systemd integration
-sd-notify = "0.4"
+sd-notify = "0.5"
 
 # Utilities
 tap = "1.0"
