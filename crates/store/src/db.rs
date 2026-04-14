@@ -1,4 +1,5 @@
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
+use std::path::Path;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -8,6 +9,16 @@ pub enum DbError {
     path: String,
     #[source]
     source: sqlx::Error,
+  },
+
+  #[error(
+    "Failed to create parent directory for database at '{path}': \
+     {source}"
+  )]
+  CreateDir {
+    path: String,
+    #[source]
+    source: std::io::Error,
   },
 
   #[error("Failed to run database migrations: {0}")]
@@ -20,10 +31,21 @@ pub struct Db(pub SqlitePool);
 
 impl Db {
   /// Open (or create) the SQLite database at `path` and run migrations.
+  /// Creates parent directories if they do not already exist.
   pub async fn open(path: &str) -> Result<Self, DbError> {
     let url = if path == ":memory:" {
       ":memory:".to_string()
     } else {
+      if let Some(parent) = Path::new(path).parent() {
+        if !parent.as_os_str().is_empty() {
+          std::fs::create_dir_all(parent).map_err(|source| {
+            DbError::CreateDir {
+              path: path.to_string(),
+              source,
+            }
+          })?;
+        }
+      }
       format!("sqlite:{path}?mode=rwc")
     };
 

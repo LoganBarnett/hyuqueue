@@ -83,6 +83,9 @@ schemars = "0.9"
 openidconnect = { version = "3", features = ["reqwest"] }
 tower-sessions = { version = "0.15", features = ["memory-store"] }
 
+# Home directory resolution
+home = "0.5"
+
 # Testing
 tempfile = "3"
 

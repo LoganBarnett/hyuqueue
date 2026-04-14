@@ -175,9 +175,14 @@ impl Config {
     let file = if let Some(path) = &cli.config {
       ConfigFileRaw::from_file(path)?
     } else {
-      let default = PathBuf::from("config.toml");
-      if default.exists() {
-        ConfigFileRaw::from_file(&default)?
+      let cwd = PathBuf::from("config.toml");
+      let xdg =
+        xdg_dir("XDG_CONFIG_HOME", ".config").map(|d| d.join("config.toml"));
+
+      if cwd.exists() {
+        ConfigFileRaw::from_file(&cwd)?
+      } else if let Some(ref xdg_path) = xdg.filter(|p| p.exists()) {
+        ConfigFileRaw::from_file(xdg_path)?
       } else {
         ConfigFileRaw::default()
       }
@@ -292,10 +297,7 @@ impl Config {
       log_level,
       log_format,
       listen_address,
-      db_path: cli
-        .db_path
-        .or(file.db_path)
-        .unwrap_or_else(|| "hyuqueue.db".to_string()),
+      db_path: cli.db_path.or(file.db_path).unwrap_or_else(default_db_path),
       frontend_path,
       base_url,
       oidc,
@@ -303,6 +305,25 @@ impl Config {
       topics,
     })
   }
+}
+
+/// Resolve an XDG base directory: honour the environment variable if set,
+/// otherwise fall back to `$HOME/<default_suffix>`.  Returns `None` when
+/// no home directory can be determined (e.g. containers with no `HOME`).
+fn xdg_dir(env_var: &str, default_suffix: &str) -> Option<PathBuf> {
+  std::env::var_os(env_var)
+    .map(PathBuf::from)
+    .or_else(|| home::home_dir().map(|h| h.join(default_suffix)))
+    .map(|d| d.join("hyuqueue"))
+}
+
+/// Default database path: `$XDG_DATA_HOME/hyuqueue/hyuqueue.db`.
+/// Falls back to `hyuqueue.db` in the working directory if the home
+/// directory cannot be determined.
+fn default_db_path() -> String {
+  xdg_dir("XDG_DATA_HOME", ".local/share")
+    .map(|d| d.join("hyuqueue.db").to_string_lossy().into_owned())
+    .unwrap_or_else(|| "hyuqueue.db".to_string())
 }
 
 /// Resolve `_cmd` suffixed keys in a TOML table: for every key ending in
