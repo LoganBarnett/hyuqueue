@@ -6,6 +6,7 @@ members = [
   "crates/lib",
   "crates/server",
   "crates/store",
+  "crates/topic-proto",
   "crates/tui",
 ]
 
@@ -93,6 +94,7 @@ tempfile = "3"
 hyuqueue-lib = { path = "crates/lib" }
 hyuqueue-core = { path = "crates/core" }
 hyuqueue-store = { path = "crates/store" }
+hyuqueue-topic-proto = { path = "crates/topic-proto" }
 
 # ============================================================================
 # BUILD PROFILES

@@ -1389,6 +1389,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyuqueue-topic-proto"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hyuqueue-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "hyuqueue-tui"
 version = "0.1.0"
 dependencies = [
