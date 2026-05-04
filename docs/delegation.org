@@ -1,0 +1,105 @@
+#+title:     Delegation
+#+language:  en
+
+* Overview
+
+Items in hyuqueue can move between instances by /publishing/, not by
+syncing state.  The originating instance keeps the source of truth;
+downstream instances hold a reference back to the origin via
+~delegate_from~.  Activities performed on a delegated item can either
+execute locally or route /upstream/ — back to the originating instance
+where the source of truth lives.
+
+This is also the mechanism that lets a remote hyuqueue instance be
+modeled as just another topic (see ~tasks.org~, "Federation: remote
+hyuqueue instances as topics").
+
+* Delegation references
+
+** ~delegate_from~
+
+Set on items received from another instance.  Identifies the immediate
+parent:
+
+#+begin_src rust :exports code
+pub struct DelegateRef {
+  pub queue_addr: String,
+  pub item_id: Uuid,
+}
+#+end_src
+
+~None~ on items that originated locally.
+
+** ~delegate_chain~
+
+Full provenance trail, ordered from origin to here.  Empty for
+locally-originated items.  Each hop appends its own ~DelegateRef~ when
+republishing.
+
+The chain makes "which Jira / which calendar / which email account"
+routing free: it identifies the originating instance, which knows its
+own credentials and external-system bindings.  Downstream instances
+do not need to carry that configuration.
+
+* Activity execution: local vs upstream
+
+Each ~Activity~ declares an ~ActivityExecutor~:
+
+#+begin_src rust :exports code
+pub enum ActivityExecutor {
+  Local,    // Run via the registered topic on this instance.
+  Upstream, // Package as a signal, route via delegate_from.
+}
+#+end_src
+
+The dispatcher reads the executor field; it does not infer routing
+from activity name or item source.  ~Local~ activities call the
+topic's ~execute()~ method directly.  ~Upstream~ activities are
+serialized as outbound signals and drained by the outbound worker.
+
+* Outbound signals
+
+The ~outbound_signals~ table queues activity invocations destined for
+upstream instances:
+
+| Column            | Purpose                                        |
+|-------------------+------------------------------------------------|
+| ~id~              | Signal ID                                      |
+| ~item_id~         | Local item the activity targets                |
+| ~target_queue_addr~ | Where to deliver — taken from ~delegate_from~ |
+| ~payload~         | Serialized activity invocation                 |
+| ~status~          | pending / delivered / failed                   |
+| ~attempts~        | Retry counter                                  |
+
+The outbound worker (~crates/server/src/workers/outbound.rs~) polls
+this table on a 5s interval, batches up to 20 signals, and posts each
+to its ~target_queue_addr~.  Maximum 5 attempts before marking
+failed.
+
+* Event log
+
+Two ~EventType~ variants capture inter-instance traffic:
+
+- ~UpstreamSignalSent~ — emitted when a signal is queued for delivery.
+- ~UpstreamSignalReceived~ — emitted when a signal arrives from a
+  downstream instance.
+
+Each ~Event~ also carries a ~Locality~ field:
+
+#+begin_src rust :exports code
+pub enum Locality {
+  Local,          // Produced and executed on this instance.
+  UpstreamSignal, // Routed upstream via delegate_from.
+}
+#+end_src
+
+The combination of event type and locality makes the audit trail
+unambiguous across instance boundaries.
+
+* Publish, don't sync
+
+The deliberate choice not to sync state is what makes inter-instance
+communication cheap: each instance is the authority for its own data.
+Downstream instances cannot get out of sync with upstream because they
+do not try to mirror state — they hold a reference and route
+mutations back to the source.

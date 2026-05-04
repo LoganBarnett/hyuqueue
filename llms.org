@@ -1,6 +1,10 @@
 #+title:     LLMs
 #+language:  en
 
+This file is the canonical contributor and LLM guidelines document for
+hyuqueue.  ~CLAUDE.md~ at the repo root is a symlink to this file — always
+edit ~llms.org~, never the symlink.
+
 * General code guidelines
 
 These are instructions for LLMs to write code more to my liking.

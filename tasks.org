@@ -1,0 +1,883 @@
+#+title:     hyuqueue Tasks
+#+language:  en
+
+* Concepts (cross-cutting)
+
+Definitions referenced by multiple TODOs below.  Not work items
+themselves — design vocabulary.
+
+** Halt signals
+
+Each actor that touches an item has exactly one or two terminal
+signals — "I'm done with this item, for whatever 'done' means."
+Halt signals carry no approval, quality, or engagement
+semantics.  They are pure item-disposition signals.
+
+| Actor   | Halt signal(s)                                        |
+|---------+-------------------------------------------------------|
+| Intake  | ~auto_resolved(summary)~ — done, no human needed      |
+|         | ~defer_to_human(reason)~ — done, escalate             |
+| Outtake | ~surface_suggestion(item)~ — done, here's a proposal  |
+|         | ~nothing_to_surface(reason)~ — done, no proposal      |
+| Human   | ~ack~ — done, item is off the human's plate           |
+
+Treating the human as just another agent makes the symmetry
+explicit: ~ack~ is the human's halt signal.  It says nothing about
+whether the human read carefully, agreed with the content, or
+engaged at all — only that the item is no longer their problem.
+
+This is why the outtake LLM should be heavily biased against
+treating acks as evidence (see "Calibration: acks are weak signal"
+under the outtake TODO).  An ack is the lowest-information possible
+positive signal — it's barely information at all.
+
+*** Halt signals are terminal — side effects come first
+
+A halt signal is the actor's ~return~.  Anything the actor wants to
+do with the item must happen /before/ the halt; there is no "after
+the halt" in which to act.  An LLM that wants to invoke
+~email_archive~ before resolving must call it as a non-halt tool
+first, then call ~auto_resolved~.  A human that wants to refile
+before moving on must trigger the create-elsewhere activity first,
+then ~ack~.
+
+This generalizes: any composite operation involving an item is a
+sequence of side-effect activities followed by exactly one halt.
+The halt is non-negotiably last.
+
+** No activity implicitly acks
+
+Ack is always its own explicit operation.  Invoking any
+activity — refile, edit, link, archive, anything — does that
+activity and only that activity.  The item remains on the actor's
+plate until an explicit ~ack~ disposes of it.
+
+Refile is the canonical example.  It is just a create-elsewhere
+activity; it does not remove the original from the actor's queue.
+The common "move this elsewhere and be done with it" workflow is
+two operations done in sequence: refile, then ack.  But
+refile-without-ack is equally valid — "I want a copy in my reading
+list and I want to keep working on this item here, because I'm not
+finished with it yet."
+
+The principle applies to LLM actors too.  Invoking ~email_archive~
+does the archive and only the archive; the intake LLM keeps going
+until it explicitly calls a halt tool.  Halt tools (~auto_resolved~,
+~defer_to_human~ for intake; ~surface_suggestion~,
+~nothing_to_surface~ for outtake) are not activities — they are
+terminal signals designed to dispose of or route the item by
+definition.  Activities never wear that function implicitly.
+
+Modeling things this way keeps the data model simple and the audit
+trail clear: every disposition is an ack-shaped event, and every
+side effect is a separate event with its own meaning.
+
+* TODO Topics as out-of-process subprocesses
+
+Today every topic is compiled into the server binary.  The ~TopicRegistry~
+resolves config entries against a hard-coded match arm in
+~crates/server/src/topics/mod.rs~, so adding a topic requires modifying and
+rebuilding the server.
+
+We want topics to run as independent subprocesses that the server spawns
+and talks to over stdio.  This keeps the core small, lets topics ship in
+their own repos, and isolates topic crashes and dependencies from the
+daemon.
+
+** Decisions
+
+These are settled and the plan below assumes them.
+
+- *Transport:* JSON-RPC 2.0 over newline-delimited JSON on stdin/stdout.
+  Same shape as ~nix-hapi~ providers (see ~~/dev/nix-hapi/provider-api.org~
+  and ~crates/lib/src/provider_host.rs~).  No HTTP, no Unix socket, no
+  MCP — those buy nothing we need.
+- *Process model:* one long-lived subprocess per configured topic.
+  Spawned at server startup after config parse and queue resolution.
+  Killed via ~Drop~.
+- *No backwards compatibility.* Single-user system.  Tear out the
+  compiled-in path entirely instead of carrying both modes.
+- *No fallback to in-process topics.*  Every topic is a subprocess.  The
+  ~Topic~ trait stays in ~crates/core~ as the SDK contract, but the
+  server holds no ~impl Topic~.
+- *Test fixture lives in-tree.*  A ~crates/topic-example~ binary acts as
+  both the integration-test fixture and the docs reference, so
+  ~cargo test --workspace~ stays self-contained.  Graduates to its own
+  repo once the protocol is locked in.
+- *Heartbeat goes away.*  ~topic-example~ subsumes its "prove the
+  pipeline works" job and exercises more of the protocol surface.
+- *Capability negotiation lives in ~init~.*  Topic announces id,
+  display name, declared activities, and which methods it implements in
+  one handshake response.  No separate version field for now — protocol
+  is in flux and there is one operator.
+
+** RPC surface
+
+| Method            | Direction              | Purpose                          |
+|-------------------+------------------------+----------------------------------|
+| ~init~            | host → topic           | Handshake: id, display_name,     |
+|                   |                        | declared activities, supported   |
+|                   |                        | methods.                         |
+| ~ingest~          | host → topic           | Same signature as the trait.     |
+| ~execute~         | host → topic           | Same signature as the trait.     |
+| ~topic_data_set~  | topic → host (notify)  | Persist state without a separate |
+|                   |                        | back-channel.                    |
+| ~shutdown~        | host → topic           | Graceful exit before SIGTERM.    |
+
+~item_activities~ and ~global_activities~ collapse into the ~init~
+response — they are declarative metadata, no need to round-trip.
+
+Topic stderr passes through to server stderr, tagged with topic id.
+
+** Crate layout
+
+- ~crates/topic-proto~ — wire types, method-name constants, JSON-RPC
+  envelope.  Shared between host and SDK so they cannot drift.
+- ~crates/topic-host~ — ~SubprocessTopic~ struct that implements
+  ~core::Topic~.  Spawns the child, multiplexes requests by id over
+  stdin/stdout, dispatches notifications to a topic-data sink.  Drop-in
+  replacement for the existing ~Arc<dyn Topic>~ so workers and activity
+  dispatch don't change.
+- ~crates/topic-sdk~ — ~run(topic: impl Topic) -> Result<()>~ entry
+  point.  Topic authors write a normal trait impl plus a four-line
+  ~main()~.  Mirrors ~nix-hapi~'s ~provider_host::run~.
+- ~crates/topic-example~ — binary that exercises the full protocol
+  surface.  Not tied to any real domain; supports whatever arbitrary
+  notion is convenient for demonstrating a feature.  Drives integration
+  tests and is the worked example in ~docs/building-a-topic.org~.
+
+** Milestones
+
+*** TODO M1: protocol crate
+
+Define the wire envelope, request/response types, method-name constants,
+and error mapping from ~TopicError~ → JSON-RPC ~error.code~/~data~.  No
+runtime behavior yet — just shared types.
+
+Note: the ~Activity~ struct in ~core~ needs upgrading at the same time
+to carry LLM-tool-shaped metadata (JSON Schema params, description,
+examples, ~human_only~ flag).  See "Activity declarations as LLM tool
+definitions" below — that work and this crate land together because the
+~init~ response serializes the new ~Activity~ shape.
+
+*** TODO M2: SDK
+
+~run(topic: impl Topic)~ that owns the JSON-RPC loop on stdin/stdout.
+Reads requests, dispatches by method name, serializes responses, emits
+notifications when the topic asks to persist data.  Exits cleanly on
+EOF or on receiving ~shutdown~.
+
+*** TODO M3: host wrapper
+
+~SubprocessTopic~ in ~topic-host~ that spawns the child, performs the
+~init~ handshake, multiplexes outgoing requests by id, dispatches
+incoming notifications, and implements ~core::Topic~ so existing
+workers don't change.
+
+*** TODO M4: topic-example binary
+
+A binary crate that exercises every RPC method.  Not modelled on any
+real domain — the example only needs to be /something/ so we can prove
+each method round-trips:
+
+- ~ingest~ produces a synthetic item per cycle.
+- ~init~ declares at least one item activity and one global activity.
+- ~execute~ handles those activities, producing a real ~Event~.
+- One activity (or each ingest) writes to ~topic_data~ via a
+  ~topic_data_set~ notification, so the read-during-ingest +
+  write-via-notification path is exercised.
+
+*** TODO M5: rewire registry, delete heartbeat
+
+- Remove ~crates/server/src/topics/heartbeat.rs~.
+- Remove ~pub mod heartbeat~ and the ~"heartbeat"~ match arm in
+  ~crates/server/src/topics/mod.rs~.
+- ~TopicRegistry~ becomes ~HashMap<String, SubprocessTopic>~; its
+  builder spawns subprocesses from the config's ~command~ field.
+- Update ~AppState.topics~ to hold the new registry shape.
+- Update integration tests to spawn ~topic-example~.
+
+*** TODO M6: docs rewrite
+
+- Collapse ~docs/building-a-topic.org~ to a single track: implement the
+  trait via the SDK, package the binary, point ~config.toml~ at it.
+- Drop the "Register in the topic registry" step entirely.
+- Optionally split out ~docs/topic-protocol.org~ as the wire spec
+  (message formats, sequence diagrams for ingest/execute, error codes).
+
+*** TODO M7: graduate ~topic-example~ to its own repo
+
+Once the protocol stops moving, lift ~crates/topic-example~ into its
+own GitHub repo (~hyuqueue-topic-example~) and reference it from docs.
+Keep an inline test fixture in-tree if needed for ~cargo test~
+hermeticity.
+
+** Open questions
+
+- *Which real topics first?*  The protocol design wants real consumers to
+  validate it.  Good first pair: one pure-ingest (RSS? email?) and one
+  ingest-plus-activities (Jira? GitHub?  org-mode refile?).  Pick what
+  you actually want to use day-to-day.
+- *Topic-data reads.*  Notifications cover writes cleanly.  For reads,
+  decide between (a) inline-on-request — server reads ~topic_data~ for
+  the topic and includes it in the request payload, or (b) a
+  ~topic_data_get~ request from topic → host (bidirectional RPC).
+  Inline is simpler; bidirectional is more flexible but doubles the
+  protocol surface.
+- *Stderr routing.*  Verbatim passthrough is fine for now.  Future:
+  topics could emit structured JSON on stderr that the server ingests
+  into its tracing layer.
+- *Crash recovery.*  v1: log loudly, mark the topic failed, no
+  auto-restart.  Revisit once we see real failure modes.
+- *Sandboxing.*  Out of scope.  Operator vets what they install.
+
+* TODO Activity declarations as LLM tool definitions
+
+Today an ~Activity~ has ~id~, ~label~, ~key~, ~executor~, ~params:
+Vec<ActivityParam>~.  That's enough for a human key palette but not for
+LLM tool calling — the model needs typed parameters, a description, and
+ideally examples.
+
+Upgrade the ~Activity~ struct in ~crates/core/src/activity.rs~ to carry
+MCP-shaped metadata so that activity declarations can be serialized
+directly as tool definitions for the intake LLM with a one-line shim,
+no translation layer.
+
+** Shape
+
+Add to ~Activity~:
+
+- ~description: String~ — natural-language description for the LLM.
+  Distinct from ~label~ (short UI text).
+- ~params~ becomes ~serde_json::Value~ holding a JSON Schema document,
+  not a ~Vec<ActivityParam>~.  Existing keys (key, label, executor) are
+  unchanged.
+- ~examples: Vec<ActivityExample>~ (optional) — few-shot input/output
+  pairs the LLM can use as guidance.  Each example is ~{ params:
+  serde_json::Value, outcome: String }~.
+- ~human_only: bool~ (default false) — when true, the activity does not
+  appear in the intake LLM's tool surface.  Reserved for things like
+  "send press release" or "approve refund > $X".
+- ~effect: ActivityEffect~ — declares whether the activity has
+  externally visible side effects:
+
+  #+begin_src rust :exports code
+  pub enum ActivityEffect {
+    Read,   // Pure query.  No mutation of external systems.
+    Write,  // Mutates external state (sends, deletes, creates, etc.).
+  }
+  #+end_src
+
+  Drives LLM tool-surface gating: the outtake LLM can directly invoke
+  ~Read~ activities (e.g. ~email_search(query)~ to count matches for a
+  proposed rule), but can only /propose/ ~Write~ activities inside
+  suggestion items.  The intake LLM can invoke both, subject to
+  confidence gating.  Topics declare the effect per activity in their
+  ~init~ response.
+
+** Why MCP shape
+
+The model is trained on MCP / OpenAI tool-call semantics.  Activities
+serialized in that shape get full discrimination on tool selection,
+schema-validated params, and the model's "pick the right named tool"
+machinery for free.  The alternative — a generic ~invoke_activity(id,
+params)~ tool — loses all of that.
+
+We use the *shape*, not necessarily the *transport*.  No MCP server is
+spun up for the in-process intake worker; tool definitions are passed
+directly to the LLM client.  Exposing hyuqueue as an MCP server (so
+external agents like Claude Desktop can drive items) is a possible
+later move, not v1.
+
+* TODO Intake LLM as agentic loop
+
+The intake LLM is not a one-shot call.  It runs an agentic loop that
+terminates only when the LLM emits an explicit halt signal.  Between
+turns the LLM observes tool results and can make derived decisions
+("archived the email, now let me check if there's a related Jira
+ticket I should also close").
+
+** Tool surface (per item)
+
+Filtered to what is applicable to /this/ item:
+
+- All item activities for the item's source topic.
+- All global activities from registered topics, except those marked
+  ~human_only~.
+- Read tools the LLM may need: ~get_item_history(item_id)~,
+  ~find_similar_items(query)~, ~get_recent_acks_for_source(source_id)~.
+- Halt tools (terminal — calling either ends the loop):
+  - ~auto_resolved(summary)~ — LLM is done, item is handled, ack the
+    item with the summary as the reason.
+  - ~defer_to_human(reason)~ — LLM is uncertain or the policy threshold
+    isn't met, route to the human queue with reason attached.
+
+** Loop semantics
+
+- Each iteration: send tools + transcript-so-far, receive one response,
+  execute its tool calls, append results to the transcript, repeat.
+- A non-halt tool call continues the loop.  A halt tool call ends it.
+- The system prompt explicitly tells the LLM that ~auto_resolved~ and
+  ~defer_to_human~ are terminal.
+- *Turn budget* caps the loop (initial: 8 turns).  Hitting the cap
+  forces ~defer_to_human(reason: "intake exceeded turn budget")~.
+- Each tool call (activity invocation, hunch write, halt) produces an
+  event in the log.  Audit trail is the event stream — same as ack.
+
+** Confidence gating
+
+Activities the LLM invokes during the loop are subject to the source
+policy's confidence threshold.  The LLM declares confidence per call
+(or the policy applies a default).  Below threshold → the loop forces
+~defer_to_human~.
+
+* TODO Outtake LLM as agentic loop with hunches and suggestion items
+
+The outtake LLM runs after every human ack on an item flagged
+~outtake_visible~ (see Item flags below).  Its job is to observe
+human activity and decide whether anything is worth surfacing back
+to the human — a revision to the intake LLM's policy, a new
+behavior rule, a source-level filter, or any other proposed plan
+that would reduce future busywork.
+
+Same agentic-loop shape as intake, but a different tool surface,
+different halt signals, and an important reframing of /what it
+produces/.
+
+(Naming note: previously called "review LLM" in code, memory, and
+docs.  Switching to "outtake" for symmetry with intake.  See
+follow-up TODO at the bottom of this section.)
+
+** What outtake produces: items carrying proposed plans
+
+The outtake LLM does not emit "policy objects" into a separate
+approval queue.  Its affirmative output is *a new item* with
+~source_topic_id = "hyuqueue"~, which lands in the human queue and
+is processed through the normal ack flow.  The human's response —
+approve, edit, reject, suppress-similar, or free-form
+guidance — is just an activity on that item.
+
+This unifies the vocabulary: everything needing human attention is
+an item.  No separate UI for policy approval, no parallel
+"suggestions panel" — there is just the queue.
+
+The item body carries a *proposed plan*: a sequence of activity
+invocations to fire if the human approves.  The plan is general; the
+types below are descriptive shapes the plan commonly takes, not a
+fixed taxonomy.
+
+*** Type A: intake-policy revision
+
+Outtake noticed the intake LLM made decisions the human reversed
+(auto-resolved items the human refiled, deferred items the human
+acked instantly with no edits).  Plan: edit the intake policy's
+~system_prompt~, threshold, or examples.
+
+*** Type B: in-queue auto-handle rule
+
+Outtake noticed the human consistently does X to items matching
+pattern Y.  Plan: install a source policy so the intake LLM
+auto-handles future matches.  Includes a /preview/ of recent items
+that would have been affected.
+
+*** Type C: source-level filter
+
+Outtake noticed a class of items the human almost always discards
+(or refiles immediately, etc.) and proposes the topic itself filter
+them at the source so they never enter the queue at all.  Plan:
+invoke a topic activity like ~email_install_filter(criteria)~.
+
+This is the strongest form — addressing the pattern at the source
+rather than auto-handling it after entry.  The user's stated goal
+("only the stuff that matters in front of the human") favors Type C
+when the topic supports it.
+
+*** Common activities on suggestion items
+
+Regardless of type, suggestion items typically expose:
+
+- ~approve~ — execute the proposed plan as-is.
+- ~edit~ — open the plan in an editor, execute the edited version.
+  Edits are critical signal — outtake re-processes the edited item
+  to learn what was wrong about its proposal.
+- ~reject~ — drop without executing.
+- ~suppress_similar~ — drop, and signal "don't propose plans along
+  these lines again."
+- ~instruct_outtake(note)~ — universal activity, available here too.
+  Free-form guidance the outtake agent will read.
+
+** Item flags (orthogonal axes)
+
+Four independent boolean flags on every ~Item~.  Each flag is
+explicit on the item; no behavior is derived from provenance,
+source, or other flags.  This is a deliberate Rich Hickey "simple"
+data model choice: decouple things that don't have to be coupled,
+even if some flag combinations are nonsensical in practice.
+
+| Flag              | Default  | Meaning                                |
+|-------------------+----------+----------------------------------------|
+| ~intake_visible~  | true     | Intake LLM processes this item.        |
+| ~outtake_visible~ | true     | Outtake LLM runs on this item's ack.   |
+| ~meta~            | false    | Item carries guidance for outtake.     |
+|                   |          | Outtake reads it and updates hunches.  |
+| ~urgent~          | false    | Insert at front of queue, not append.  |
+
+Common combinations:
+
+- *Topic-ingested items*: ~intake_visible=true, outtake_visible=true,
+  meta=false, urgent=false~.  Defaults across the board.
+- *Hyuqueue suggestion items*: ~intake_visible=false,
+  outtake_visible=true, meta=true~, often ~urgent=true~ when
+  timely ("you're processing your inbox right now — here's a rule
+  that catches 300 of these").
+- *~instruct_outtake~ result*: ~meta=true~ (the activity sets
+  this); other flags inherited or set by the human.
+
+*** Why explicit flags, not source-derived behavior
+
+An earlier draft said "intake routing is provenance-based" — server
+items bypass intake, topic items go through intake, derived
+automatically from where the item came from.  That's the same
+coupling problem under a different name: now the system has to
+remember a rule that maps one piece of state to another, and any
+exception requires either special-casing or punching through the
+abstraction.
+
+Better: every item carries every flag explicitly.  Defaults are set
+at creation time based on whatever convention makes sense
+(server-generated suggestion items default to ~intake_visible=false~
+because there's nothing to triage; topic-ingested items default to
+~intake_visible=true~ because that's intake's job).  But the field
+is the truth.  The system reads the flag and acts; it does not
+reconstruct intent from origin.
+
+*** Why visibility, not source-based skipping
+
+A parallel earlier draft said "skip outtake for hyuqueue-source
+items" to prevent recursion.  Same coupling mistake.  Outtake
+/must/ see human responses to its own suggestions — especially
+edits, the strongest learning signal we have about what outtake
+got wrong.  The ~outtake_visible~ flag is a per-item knob;
+suggestion items default to ~outtake_visible=true~ for exactly that
+reason.  Set it false only for narrow intentional cases (extreme
+sensitivity, system noise we don't want learned-from).
+
+*** Nonsensical combinations
+
+Some combinations have no obvious meaning: e.g., a server-generated
+suggestion item with ~intake_visible=true~ (intake would try to
+triage something already meant for the human).  The system handles
+these by doing the natural thing — intake would either pass it
+through trivially or skip it via a heuristic — but the data model
+itself does not forbid them.  Keeping the model simple and the
+constraints in the application logic (rather than baking them into
+schema-level invariants) means we can change the heuristics without
+migrations.
+
+** Meta items: natural-language guidance to outtake
+
+A meta item is one whose primary purpose is to tell the outtake
+agent how to think about a pattern.  Hyuqueue suggestion items are
+the structured subset; the broader category is any item carrying a
+note for outtake.
+
+The note is free-form text.  Examples ranging from narrow to
+generalizing:
+
+- "Don't suggest archive for emails from this sender."
+- "Don't suggest archive when the email subject contains '[urgent]'
+  — the sender is just bad at flagging." (sender vs subject as the
+  discriminator — different generalizations)
+- "Generalize this suggestion to also catch tickets from the
+  partner-eng project, not just internal."
+- "Remind me about this pattern again after I've gone through twice
+  as many similar items."
+
+Outtake reads meta-item notes during its agentic loop and
+translates them into hunch updates: ~strengthen_hunch~,
+~weaken_hunch~, ~record_hunch~, ~abandon_hunch~, or new constraint
+fields on existing hunches.  The translation is the LLM's job; the
+human writes natural language.
+
+** Universal activity: ~instruct_outtake(note)~
+
+Available on /every/ item, not just suggestion items.  Provided by
+hyuqueue itself (server-builtin universal activity, alongside
+~ack~).
+
+Invoking it on an item:
+
+1. Marks the item ~meta=true~.
+2. Attaches the human's note to the item's payload.
+3. Triggers outtake on the next worker cycle (if not already
+   queued).
+
+Use case the user described: "suggest something to handle this item
+and items just like it, here's some more context to help."  The
+human is processing an item, decides outtake should learn from it,
+fires ~instruct_outtake~ with a note, and the item becomes outtake
+guidance instead of (or in addition to) being acked normally.
+
+** Tool surface
+
+- *Read tools.*  ~get_recent_items~, ~get_item_history(item_id)~,
+  ~find_similar_acks~, ~find_items_matching(pattern)~ (used to
+  build previews and validate proposed rules), ~get_source_policy~.
+- *Read activities from topics.*  Any topic activity declared with
+  ~effect: Read~ (e.g. ~email_search(query)~, ~jira_query(jql)~) is
+  directly invokable.  This is what lets outtake test a proposed
+  rule by counting matches before bundling it into a suggestion.
+- *Write activities from topics.*  Cannot be invoked.  Outtake can
+  only /propose/ them inside a suggestion item's plan.
+- *Hunch tools* — working memory across invocations (see Hunches
+  below).
+- *Halt tools* (terminal — calling either ends the loop):
+  - ~surface_suggestion(item)~ — create a new ~hyuqueue~-source
+    item in the human queue carrying a proposed plan.  Plan is a
+    sequence of activity invocations to fire on approval.  Item can
+    be flagged ~urgent~ when timely.
+  - ~nothing_to_surface(reason)~ — looked, found nothing worth
+    surfacing this turn.  Just as valid as surfacing.
+
+** Loop semantics
+
+Same as intake.  Halt tools terminate; everything else (reads,
+read-activity invocations, hunch writes) continues.  Turn budget
+(initial: 12 turns, higher than intake because outtake is allowed
+to be more deliberate).  Hitting the cap forces
+~nothing_to_surface(reason: "outtake exceeded turn budget")~.
+
+** Calibration: acks are weak signal
+
+The outtake LLM should be heavily biased *against* building hunches
+purely from acks.  An ack tells you the human probably read the
+item but says nothing about with what vigor, or whether they
+actually engaged with its content.
+
+Strong signals (use these to build / strengthen hunches):
+
+- *Refiles* — the human actively said "this didn't belong here."
+- *Edits to suggestion items* — the human told you specifically
+  what was wrong about your proposal.
+- *Explicit meta-item guidance* — the human is talking to you
+  directly.
+- *Sequences of specific write activities* — 50 archives in a row
+  on similar items is a real pattern.
+
+Weak signals (use sparingly, as tiebreakers at most):
+
+- *Acks alone* — at best, "the human did not flag this as wrong."
+
+The system prompt for outtake should make this calibration
+explicit.
+
+** Hyuqueue as a meta-source
+
+Suggestion items have ~source_topic_id = "hyuqueue"~ but hyuqueue
+is *not* a subprocess topic.  Suggestion items are server-generated
+(the outtake worker writes them when ~surface_suggestion~ is
+called), not produced by a polled ~ingest()~.  Universal activities
+(~ack~, ~instruct_outtake~) and the suggestion-item-specific
+activities (~approve~, ~edit~, ~reject~, ~suppress_similar~) are
+server-builtin, not topic-declared.
+
+We do not need to spawn a hyuqueue subprocess to satisfy the model.
+The "hyuqueue topic" is a virtual source — recognized by the system
+when it dispatches activities, but not in the ~TopicRegistry~.
+
+** Hunches: working memory across invocations
+
+Most acks aren't pattern-worthy on their own — patterns emerge
+across multiple acks.  The outtake LLM needs cheap working memory
+between invocations so it isn't re-deriving everything from raw
+events each turn.
+
+A *hunch* is a tentative pattern the LLM has noticed but isn't
+ready to surface as a suggestion.  Hunches accumulate evidence
+across outtake runs, eventually graduating to a
+~surface_suggestion~ call or being abandoned.
+
+*** Entity shape
+
+#+begin_src rust :exports code
+pub struct Hunch {
+  pub id: Uuid,
+  pub topic_id: Option<String>,
+  pub description: String,
+  pub supporting_item_ids: Vec<Uuid>,
+  pub contradicting_item_ids: Vec<Uuid>,
+  pub status: HunchStatus,
+  pub created_at: DateTime<Utc>,
+  pub updated_at: DateTime<Utc>,
+}
+
+pub enum HunchStatus {
+  Active,
+  Graduated { suggestion_item_id: Uuid },
+  Abandoned { reason: String },
+  Suppressed { suggestion_item_id: Uuid },
+}
+#+end_src
+
+~topic_id~ is ~Option<String>~: ~Some~ for topic-scoped patterns
+("emails from this sender always get archived"), ~None~ for
+genuinely cross-topic patterns ("anything containing 'meeting
+notes' gets refiled").
+
+~Suppressed~ is distinct from ~Abandoned~: abandonment is the LLM's
+own decision, suppression is the human telling the LLM "don't
+propose this kind of thing again."  Outtake reads suppressed
+hunches at the start of each turn and the system prompt instructs
+it not to re-propose similar patterns.
+
+*** Tools
+
+- ~read_hunches(topic_id: Option<String>)~ — load active hunches at
+  the start of a turn.  Returns matching topic hunches plus all
+  global (~None~) hunches.  Suppressed hunches are returned as a
+  separate negative-signal list.
+- ~record_hunch(description, topic_id, supporting_item_ids)~ — start
+  tracking a new pattern.
+- ~strengthen_hunch(id, item_id)~ — add supporting evidence.
+- ~weaken_hunch(id, item_id, reason)~ — record contradicting
+  evidence.  Equally important — keeps hunches from drifting toward
+  over-confidence.
+- ~graduate_hunch_to_suggestion(id, suggestion)~ — formalize the
+  hunch as a Type A or Type B suggestion item.  Transitions the
+  hunch to ~Graduated~ and surfaces the item.
+- ~abandon_hunch(id, reason)~ — discard.
+
+*** Persistence
+
+Hunches fit the existing event-sourcing model.  New events:
+~HunchProposed~, ~HunchStrengthened~, ~HunchWeakened~,
+~HunchGraduated~, ~HunchAbandoned~, ~HunchSuppressed~.  ~hunches~
+is a projection table mirroring how ~topic_data~ works.
+
+When the human acks a suggestion item with ~suppress_similar~, the
+server emits ~HunchSuppressed~ for the originating hunch.  When the
+human acks with ~approve_*~ or ~edit_*~, no hunch event is
+needed — the hunch is already ~Graduated~ from the original
+~surface_suggestion~ call.  When the human acks with ~reject_*~,
+emit a ~HunchWeakened~ on the originating hunch (the LLM was wrong
+to propose, but the pattern itself isn't necessarily off-limits for
+future proposals).
+
+*** Open questions
+
+- *Housekeeping.*  Stale hunches will accumulate.  Either a TTL
+  ("abandon if no movement in N days") or a periodic compaction
+  pass where the outtake LLM is asked to triage its own hunch list.
+  Defer the choice — see what the actual failure mode looks like
+  first.
+- *Cross-LLM visibility.*  Should the intake LLM see active hunches
+  for the source it's currently triaging?  Could help confidence
+  ("the outtake LLM has 4/0 evidence that this kind of email gets
+  archived"), or could pollute intake's signal.  Defer.
+
+** v1 scope
+
+For the first pass, build only what's needed to demonstrate the
+outtake → suggestion-item → human-ack loop end-to-end:
+
+1. The agentic loop with halt signals.
+2. Item flags: all four (~intake_visible~, ~outtake_visible~,
+   ~meta~, ~urgent~).  Cheap; locks the data model in early.  Set
+   defaults at creation time per the table in the Item flags
+   section; do not derive behavior from provenance.
+3. Type B (in-queue auto-handle rule) suggestions only.  Type A
+   (intake-policy revision) and Type C (source-level filter) are
+   strictly more powerful but more involved — defer.
+4. Hunches with ~Active~ / ~Abandoned~ / ~Graduated~ statuses.
+   ~Suppressed~ + the ~suppress_similar~ activity can wait.
+5. ~approve~ and ~reject~ activities on suggestion items.  ~edit~
+   waits for editor integration; ~suppress_similar~ waits for the
+   ~Suppressed~ status work.
+6. ~instruct_outtake(note)~ universal activity.  Cheap and
+   high-value — gives the human a way to talk to outtake about any
+   item from day one.
+7. ~ActivityEffect::Read~ vs ~Write~ on the activity declaration,
+   with outtake gated to Read invocations only.  Important for
+   safety, not just optimization.
+8. Calibrate outtake's system prompt to bias against acks as
+   evidence — it's a prompt, not a code change, so cheap to land
+   alongside the loop.
+9. Intake worker honors ~intake_visible~ — skips items where it's
+   false.  No special-casing by source.
+10. Queue insertion honors ~urgent~ — inserted at front, others
+    appended.
+
+Type A, Type C, suppression, edit-in-place, hunch housekeeping, and
+cross-LLM hunch visibility all follow once the basic loop proves
+out.
+
+** Follow-up: rename "review" → "outtake" everywhere
+
+- ~MEMORY.md~ describes the post-ack LLM as "Review LLM."  Switch to
+  "Outtake LLM" for symmetry with "Intake LLM."
+- Rename any ~review_~ identifiers in code (worker module, config
+  fields, log targets) to ~outtake_~.  Currently
+  ~crates/server/src/workers/review.rs~ — becomes ~outtake.rs~.
+- Update worker references in
+  ~crates/server/src/workers/mod.rs~ and any callers.
+
+* TODO Federation: remote hyuqueue instances as topics
+
+A remote hyuqueue instance can be modeled as just another topic.  The
+existing delegation primitives (~delegate_from~, ~delegate_chain~,
+~outbound_signals~, ~ActivityExecutor::Upstream~ — see
+~docs/delegation.org~) are the mechanism; the user-facing API is
+"point a topic at a remote hyuqueue endpoint."
+
+This collapses what was previously a separate "federation" milestone
+into the topic plugin system.  Same protocol, same configuration
+shape, same lifecycle, same cleanup semantics.  No new architecture
+to invent — the delegation work already shipped is the substrate.
+
+** Sketch
+
+A remote-hyuqueue topic:
+
+- ~ingest()~ — polls the remote queue's HTTP API for items it should
+  pull, copies them locally with ~delegate_from~ pointing back to the
+  remote.
+- ~item_activities()~ — reflects the activities the remote item
+  exposes; all marked ~ActivityExecutor::Upstream~ since they must
+  execute where the source of truth lives.
+- ~execute()~ — never called locally for upstream activities.  The
+  server packages them as outbound signals and the outbound worker
+  delivers them to the remote.
+- Authentication: the topic config carries credentials for the
+  remote hyuqueue (OIDC token, API key, mutual TLS — TBD).
+
+** Open questions
+
+- *Trust model.*  When item activities reflect activities declared
+  by a remote topic, do we re-validate them locally?  What happens
+  if the remote ships an activity with executor ~Local~?  Probably
+  reject — only ~Upstream~ activities make sense for remote-origin
+  items.
+- *Filter / view.*  Does the remote-hyuqueue topic expose every item
+  from the remote, or only ones matching some filter?  Probably the
+  latter, with the filter declared in topic config.  Otherwise a
+  busy upstream floods the downstream queue.
+- *Bidirectional acks.*  When the local human acks a delegated item,
+  do we propagate the ack upstream?  The existing ack-is-terminal
+  semantics (see Concepts) suggest the local ack is local-only — but
+  some upstream may want to know.  Probably an explicit
+  ~upstream_ack~ universal activity, separate from the local ack.
+- *Cycle detection.*  ~delegate_chain~ should be checked for cycles
+  before re-publishing; otherwise A delegates to B delegates to A
+  loops forever.
+
+* TODO PostgreSQL support
+
+*Parking-lot item — needs human review/approval before acting.*
+
+The system is SQLite-only today.  Originally PostgreSQL was deferred
+to "the federation milestone," but that milestone has been collapsed
+into the topic plugin system (see "Federation: remote hyuqueue
+instances as topics" above).  PostgreSQL therefore needs its own
+justification rather than riding on federation work.
+
+Likely triggers for revisiting:
+
+- Concurrent-write contention from multiple clients hitting the same
+  daemon (probably not in a single-user setup).
+- Need for a hosted, replicated database for multi-machine
+  availability.
+- Operational preference for a separate database process (existing
+  backup tooling, monitoring stories, etc.).
+
+If pursued, the work is roughly: introduce a backend abstraction
+behind ~sqlx::SqlitePool~, port migrations to PostgreSQL syntax
+(especially JSON column handling), and find a replacement for FTS5
+(no direct PostgreSQL equivalent — likely ~tsvector~ or ~pg_trgm~).
+
+* TODO Embedding-based similarity
+
+*Parking-lot item — needs human review/approval before acting.*
+
+Today similarity / "find related items" is served by SQLite FTS5
+keyword matching plus LLM tool calls — the outtake LLM can issue
+~find_items_matching(pattern)~ and reason about the results.
+Embedding-based vector similarity was deferred for the MVP because
+FTS5 + LLM reasoning covers most cases.
+
+Likely trigger: visible misses where FTS5 fails to find semantically
+similar items the human would consider related (e.g. "invoice" vs
+"billing statement" with no shared keywords).  The outtake LLM's
+hunch-formation quality is the most likely place this would hurt.
+
+Sketch if pursued: pick an embeddings model (Ollama-served, for
+parity with the LLM stack), add an ~item_embeddings~ column or
+adjacent table, compute on ingest, expose
+~find_similar_by_embedding(item_id)~ as a read tool to the outtake
+LLM.  Decide on vector index strategy (~sqlite-vss~ extension or
+brute force at small scale).
+
+* TODO Emacs package in its own repo
+
+*Parking-lot item — needs human review/approval before acting.*
+
+The Emacs client (~hyuqueue.el~) currently lives at ~emacs/~ in this
+repo for ergonomic co-development with the server.  Eventually it
+likely wants its own repo so it can be MELPA-distributed and have an
+independent release cadence.
+
+Likely trigger: the server REST API stabilizes enough that the Emacs
+package no longer needs lockstep changes; or a desire to publish to
+MELPA.
+
+Work involved: extract the directory with ~git filter-repo~ to
+preserve history, set up its own CI (Eldev or similar), publish a
+recipe to MELPA.  The server-side REST API becomes the public
+boundary at that point.
+
+* TODO Upstream signal push vs pull (may be a topic itself)
+
+*Parking-lot item — needs human review/approval before acting.*
+
+The outbound worker currently /pushes/ signals from
+~outbound_signals~ to remote ~target_queue_addr~ on a fixed-interval
+poll (5s, batch 20).  Open question whether the direction should be
+inverted in some scenarios (remote /pulls/ pending signals on its
+own schedule), or whether either direction should be configurable
+per topic.
+
+This dovetails with "Federation: remote hyuqueue instances as
+topics" above.  If a remote-hyuqueue is a topic, then signal
+delivery is a topic activity, and push vs pull becomes the topic's
+choice.  The outbound worker may then become a delivery /helper/
+the federation topic uses, not a fixed daemon worker.
+
+Decide after the federation-as-topic design has shape — whichever
+direction shakes out from that work probably answers this too.
+
+* TODO Defer budget in iron mode
+
+*Parking-lot item — needs human review/approval before acting.*
+
+Iron mode discourages skipping — only ~ack~ advances the queue.  But
+there will need to be /some/ escape hatch for "I genuinely cannot
+handle this right now, push it back."  An unlimited defer
+reintroduces the very skipping iron mode is meant to suppress.
+
+The parking-lot idea: a /budget/ on defers — per-item, per-session,
+or both.  Once exhausted, the actor must either ~ack~ the item or
+trigger an explicit escalation (assign elsewhere, raise priority,
+etc).
+
+Open questions:
+
+- *Defer doesn't currently exist as a primitive.*  It would be a new
+  universal activity (alongside ~ack~).  Need to decide its shape
+  before budgeting it: "defer to back of queue" and "defer until
+  time T" are different operations.
+- *Per-item or per-session budget.*  Per-item aligns with "this
+  specific item is hard."  Per-session catches "I'm dodging
+  everything today."  Possibly both.
+- *Visibility.*  Counter shown in the UI from the start, or
+  invisible until exhausted?  Visible probably encourages gaming
+  ("I have 2 defers left, better use them").  Invisible surprises
+  on exhaustion.

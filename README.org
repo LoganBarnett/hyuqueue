@@ -10,11 +10,55 @@ trends toward zero items over time.
 
 The architecture follows an *LLM sandwich* pattern: items flow through an
 intake LLM that auto-handles confident decisions, surface to a human queue
-for uncertain items, and then pass through a review LLM after the human
-acknowledges them to detect patterns and suggest automation policies.
+for uncertain items, and then pass through an outtake LLM after the human
+acknowledges them to surface suggestion items proposing patterns to
+automate.
+
+#+begin_example
+Sources → Intake Queue → Intake LLM → (confident) auto-handled
+                                    → (uncertain) Human Queue
+                                          ↓ human acks
+                                    Outtake Queue → Outtake LLM → suggestion items
+#+end_example
 
 Emacs (via ~transient.el~) is the primary UI.  A TUI (ratatui) and web
 frontend (Elm) are secondary, proving the architecture is client-agnostic.
+
+* Concepts
+
+** Ack is terminal
+
+~Ack~ is an actor's halt signal — "I'm done with this item, for
+whatever 'done' means."  Anything you want to do with an item must
+happen /before/ the ack: refile, edit, link, comment, propose a rule,
+anything.  There is no "after the ack" in which to act on the item.
+
+This applies regardless of queue mode (iron, tin, or otherwise) and
+applies to every actor uniformly — human, intake LLM, outtake LLM.
+
+Ack is also always its own explicit operation.  No activity
+implicitly acks.  Refile, for example, is just a create-elsewhere
+activity that does /not/ remove the original from your queue — the
+common "move this elsewhere and be done with it" workflow is two
+distinct operations done in sequence: refile, then ack.  Without
+the ack, the original stays active.
+
+Ack carries no approval semantics.  It does not say the content was
+good, that the human read carefully, or that the human agreed with
+anything.  It only says the item is off the actor's plate.
+
+** Queue modes
+
+Queues run in one of several modes, named after metals — lighter
+metals correspond to softer modes:
+
+- *Iron (Fe)* — default.  One item at a time.  Only ~ack~ advances
+  the queue.  Discourages skipping and trends toward zero items.
+- *Tin (Sn)* — soft / browse mode.  Skip around freely.  Useful for
+  scanning state without acting.
+
+The default is iron because the queue succeeds when it shrinks; tin
+exists for inspection and ad-hoc workflows.
 
 * Installation
 
@@ -95,15 +139,13 @@ hyuqueue-tui                            # Iron mode: SPC to ack, r to refresh, q
 
 * Gotchas and Tradeoffs
 
-- *Iron mode* (default): one item at a time.  Only ~ack~ advances the
-  queue.  This is intentional — the queue succeeds when it shrinks.
 - *Source is required*: every item must have a ~--source~.  No sourceless
   items.  This enables LLM policy matching.
 - *OIDC is optional*: the server starts without authentication when OIDC
   fields are absent.  All four OIDC fields must be set together or all
   absent.
-- *SQLite only*: PostgreSQL is deferred to the federation milestone.
-- Workers poll on fixed intervals (intake 2s, review 10s, outbound 5s).
+- *SQLite only*: PostgreSQL is not currently supported.
+- Workers poll on fixed intervals (intake 2s, outtake 10s, outbound 5s).
   This is adequate for the expected throughput.
 
 * Contributing
