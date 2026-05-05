@@ -1401,6 +1401,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyuqueue-topic-sdk"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "hyuqueue-core",
+ "hyuqueue-topic-proto",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "hyuqueue-tui"
 version = "0.1.0"
 dependencies = [

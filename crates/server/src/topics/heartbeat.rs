@@ -3,7 +3,7 @@ use chrono::Utc;
 use hyuqueue_core::{
   activity::ActivityInvocation,
   event::Event,
-  topic::{IngestItem, Topic, TopicError},
+  topic::{IngestItem, Topic, TopicCtx, TopicError},
 };
 use serde_json::json;
 
@@ -23,6 +23,7 @@ impl Topic for HeartbeatTopic {
 
   async fn ingest(
     &self,
+    _ctx: &TopicCtx,
     _config: &serde_json::Value,
   ) -> Result<Vec<IngestItem>, TopicError> {
     Ok(vec![IngestItem {
@@ -35,6 +36,7 @@ impl Topic for HeartbeatTopic {
 
   async fn execute(
     &self,
+    _ctx: &TopicCtx,
     invocation: &ActivityInvocation,
     _item_id: uuid::Uuid,
   ) -> Result<Event, TopicError> {

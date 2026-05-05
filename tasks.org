@@ -881,3 +881,33 @@ Open questions:
   invisible until exhausted?  Visible probably encourages gaming
   ("I have 2 defers left, better use them").  Invisible surprises
   on exhaustion.
+
+* TODO Audit pre-existing ~unwrap~ / ~expect~ across the codebase
+
+The global Rust guideline (see ~~/.claude/CLAUDE.md~) prohibits
+~.unwrap()~ and ~.expect()~ in non-test code.  M1/M2 introduced new
+code that complies; the rest of the codebase pre-dates the rule and
+has accumulated violations that need to be fixed.
+
+Known violations (as of M2 commit):
+
+- ~crates/store/src/items.rs~ — ~.unwrap()~ on
+  ~serde_json::to_string~ at multiple bind sites.
+- ~crates/store/src/topic_data.rs~ — same pattern.
+- ~crates/store/src/events.rs~ — multiple ~.unwrap()~ calls.
+- ~crates/store/src/signals.rs~ — same.
+- ~crates/store/src/queues.rs~ — same.
+- ~crates/server/src/main.rs~ — ~.expect()~ on signal handler
+  installation.
+- ~crates/server/src/web_base.rs~ — ~.expect()~ on Prometheus
+  counter creation/registration.
+
+Approach: introduce semantic error variants (per the project's
+thiserror convention) and propagate via ~?~.  For the store crates
+the conversion is mechanical — JSON serialization either becomes a
+new ~StoreError~ variant or rides on an existing one.  For the
+server's signal handlers and Prometheus setup, fail fast at
+startup with a clean error message rather than panicking.
+
+Run ~rg '\.unwrap\(|\.expect\(' --type rust crates/~ excluding
+~tests/~ and ~#[cfg(test)]~ blocks to drive the cleanup.

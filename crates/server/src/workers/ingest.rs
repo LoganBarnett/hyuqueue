@@ -9,6 +9,7 @@ use crate::topics::TopicRegistry;
 use hyuqueue_core::{
   event::{Actor, EventType, Locality},
   item::{Item, ItemState},
+  topic::TopicCtx,
 };
 use hyuqueue_store::{events, items, Db};
 use serde_json::json;
@@ -29,8 +30,12 @@ pub async fn run(db: Db, registry: Arc<TopicRegistry>) {
 }
 
 async fn process_all(db: &Db, registry: &TopicRegistry) {
+  // Stub context for in-process topic calls.  Subprocess topics
+  // (M3) will surface their own notifications via stdout instead of
+  // through this ctx, so the no-op is fine here.
+  let ctx = TopicCtx::stub();
   for (topic_id, entry) in registry.entries() {
-    let ingest_items = match entry.topic.ingest(&entry.config).await {
+    let ingest_items = match entry.topic.ingest(&ctx, &entry.config).await {
       Ok(items) => items,
       Err(e) => {
         warn!(

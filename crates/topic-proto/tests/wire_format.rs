@@ -305,7 +305,7 @@ fn shutdown_request_round_trips() {
 fn unsupported_activity_maps_to_rpc_error() {
   let err =
     TopicError::UnsupportedActivity("foo".to_string(), "bar".to_string());
-  let rpc = topic_error_to_rpc_error(&err);
+  let rpc = topic_error_to_rpc_error(&err).unwrap();
   assert_eq!(rpc.code, RPC_ERROR_CODE_TOPIC);
   assert!(rpc.message.contains("foo"));
   let data: TopicErrorData = serde_json::from_value(rpc.data.unwrap()).unwrap();
@@ -324,7 +324,7 @@ fn execution_error_maps_to_rpc_error() {
     activity: "send".to_string(),
     reason: "smtp died".to_string(),
   };
-  let rpc = topic_error_to_rpc_error(&err);
+  let rpc = topic_error_to_rpc_error(&err).unwrap();
   assert_eq!(rpc.code, RPC_ERROR_CODE_TOPIC);
   let data: TopicErrorData = serde_json::from_value(rpc.data.unwrap()).unwrap();
   assert_eq!(
@@ -339,7 +339,7 @@ fn execution_error_maps_to_rpc_error() {
 #[test]
 fn configuration_error_maps_to_rpc_error() {
   let err = TopicError::Configuration("missing api key".to_string());
-  let rpc = topic_error_to_rpc_error(&err);
+  let rpc = topic_error_to_rpc_error(&err).unwrap();
   let data: TopicErrorData = serde_json::from_value(rpc.data.unwrap()).unwrap();
   assert_eq!(
     data,

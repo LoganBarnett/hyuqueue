@@ -55,14 +55,18 @@ impl From<&TopicError> for TopicErrorData {
 }
 
 /// Convert a `TopicError` to an `RpcError` with structured `data`.
-pub fn topic_error_to_rpc_error(err: &TopicError) -> RpcError {
-  // `TopicErrorData` is a plain enum of String fields — its Serialize
-  // impl is infallible.  The `expect` here documents that invariant.
-  let data = serde_json::to_value(TopicErrorData::from(err))
-    .expect("TopicErrorData has no fallible serializer");
-  RpcError {
+///
+/// Fallible because `serde_json::to_value` returns `Result`; in
+/// practice `TopicErrorData` is a plain enum of `String` fields and
+/// the conversion does not fail, but per the project's no-`unwrap`
+/// rule the result is propagated rather than asserted.
+pub fn topic_error_to_rpc_error(
+  err: &TopicError,
+) -> Result<RpcError, serde_json::Error> {
+  let data = serde_json::to_value(TopicErrorData::from(err))?;
+  Ok(RpcError {
     code: RPC_ERROR_CODE_TOPIC,
     message: err.to_string(),
     data: Some(data),
-  }
+  })
 }
