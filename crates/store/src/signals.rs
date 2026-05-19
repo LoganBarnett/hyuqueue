@@ -11,6 +11,9 @@ pub enum SignalsError {
     #[source]
     source: sqlx::Error,
   },
+
+  #[error("Failed to serialize signal payload: {0}")]
+  Serialize(#[source] serde_json::Error),
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -33,6 +36,8 @@ pub async fn enqueue(
 ) -> Result<Uuid, SignalsError> {
   let id = Uuid::new_v4();
   let now = Utc::now().to_rfc3339();
+  let payload_str =
+    serde_json::to_string(&payload).map_err(SignalsError::Serialize)?;
   sqlx::query(
     "INSERT INTO outbound_signals
        (id, item_id, target_queue_addr, activity_id, payload,
@@ -43,7 +48,7 @@ pub async fn enqueue(
   .bind(item_id.to_string())
   .bind(target_queue_addr)
   .bind(activity_id)
-  .bind(serde_json::to_string(&payload).unwrap())
+  .bind(payload_str)
   .bind(&now)
   .bind(&now)
   .execute(db.pool())

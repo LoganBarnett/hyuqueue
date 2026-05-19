@@ -13,36 +13,32 @@ pub enum EventsError {
     source: sqlx::Error,
   },
 
+  #[error("Failed to serialize event field '{field}': {source}")]
+  Serialize {
+    field: &'static str,
+    #[source]
+    source: serde_json::Error,
+  },
+
   #[error("Failed to deserialize event data: {0}")]
   Deserialize(#[from] serde_json::Error),
 }
 
 pub async fn append(db: &Db, event: &Event) -> Result<(), EventsError> {
+  let event_type_str = ser_unquoted(&event.event_type, "event_type")?;
+  let actor_str = ser_unquoted(&event.actor, "actor")?;
+  let locality_str = ser_unquoted(&event.locality, "locality")?;
+  let payload_str = ser(&event.payload, "payload")?;
   sqlx::query(
     "INSERT INTO events
        (id, event_type, actor, locality, payload, created_at)
      VALUES (?,?,?,?,?,?)",
   )
   .bind(event.id.to_string())
-  .bind(
-    serde_json::to_string(&event.event_type)
-      .unwrap()
-      .trim_matches('"')
-      .to_string(),
-  )
-  .bind(
-    serde_json::to_string(&event.actor)
-      .unwrap()
-      .trim_matches('"')
-      .to_string(),
-  )
-  .bind(
-    serde_json::to_string(&event.locality)
-      .unwrap()
-      .trim_matches('"')
-      .to_string(),
-  )
-  .bind(serde_json::to_string(&event.payload).unwrap())
+  .bind(event_type_str)
+  .bind(actor_str)
+  .bind(locality_str)
+  .bind(payload_str)
   .bind(event.created_at.to_rfc3339())
   .execute(db.pool())
   .await
@@ -51,6 +47,24 @@ pub async fn append(db: &Db, event: &Event) -> Result<(), EventsError> {
     source,
   })?;
   Ok(())
+}
+
+fn ser<T: serde::Serialize>(
+  value: &T,
+  field: &'static str,
+) -> Result<String, EventsError> {
+  serde_json::to_string(value)
+    .map_err(|source| EventsError::Serialize { field, source })
+}
+
+/// Serialize an enum-as-string (e.g. `EventType`, `Actor`) and strip
+/// the surrounding JSON quotes so the result fits in a SQLite TEXT
+/// column without extra escaping at the application layer.
+fn ser_unquoted<T: serde::Serialize>(
+  value: &T,
+  field: &'static str,
+) -> Result<String, EventsError> {
+  ser(value, field).map(|s| s.trim_matches('"').to_string())
 }
 
 pub async fn for_item(

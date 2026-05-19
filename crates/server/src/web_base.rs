@@ -54,6 +54,20 @@ pub enum AppStateError {
 
   #[error("Invalid OIDC redirect URI: {0}")]
   InvalidRedirectUri(String),
+
+  #[error("Failed to create Prometheus counter '{name}': {source}")]
+  CounterCreate {
+    name: &'static str,
+    #[source]
+    source: prometheus::Error,
+  },
+
+  #[error("Failed to register Prometheus counter '{name}': {source}")]
+  CounterRegister {
+    name: &'static str,
+    #[source]
+    source: prometheus::Error,
+  },
 }
 
 impl AppState {
@@ -72,11 +86,18 @@ impl AppState {
   ) -> Result<Self, AppStateError> {
     let registry = Registry::new();
     let request_counter =
-      IntCounter::new("http_requests_total", "Total HTTP requests")
-        .expect("Failed to create counter");
+      IntCounter::new("http_requests_total", "Total HTTP requests").map_err(
+        |source| AppStateError::CounterCreate {
+          name: "http_requests_total",
+          source,
+        },
+      )?;
     registry
       .register(Box::new(request_counter.clone()))
-      .expect("Failed to register counter");
+      .map_err(|source| AppStateError::CounterRegister {
+        name: "http_requests_total",
+        source,
+      })?;
 
     let oidc_client = match &config.oidc {
       Some(oidc) => {
@@ -124,32 +145,6 @@ impl AppState {
       llm_config: Arc::new(config.llm.clone()),
       topics: topic_registry,
     })
-  }
-
-  /// Construct a minimal `AppState` for testing without OIDC or LLM.
-  pub fn new_test(db: Db, frontend_path: PathBuf) -> Self {
-    let registry = Registry::new();
-    let request_counter =
-      IntCounter::new("http_requests_total", "Total HTTP requests")
-        .expect("Failed to create counter");
-    registry
-      .register(Box::new(request_counter.clone()))
-      .expect("Failed to register counter");
-
-    Self {
-      db,
-      registry: Arc::new(registry),
-      request_counter,
-      frontend_path,
-      oidc_client: None,
-      llm_config: Arc::new(LlmConfig {
-        base_url: "http://localhost:11434/v1".to_string(),
-        intake_model: "llama3.2".to_string(),
-        review_model: "llama3.2".to_string(),
-        api_key: None,
-      }),
-      topics: Arc::new(TopicRegistry::empty()),
-    }
   }
 }
 

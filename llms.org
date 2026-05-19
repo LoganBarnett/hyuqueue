@@ -77,6 +77,44 @@ the middle of a call chain without breaking the chain.
 Prefer functional combinators over explicit ~loop~ and early ~return~.  When
 functions grow complicated, simplify by extracting smaller functions.
 
+**** ~for~ loops are a smell
+
+Reach for ~.iter().map().collect()~, ~.try_fold(...)~,
+~.filter(...)~, etc., before reaching for ~for x in xs~.  The
+combinators carry the intent in the operator names; the ~for~ loop
+buries it in the body and forces the reader to reconstruct what's
+happening from the control flow.  Use ~for~ only when the body
+genuinely needs imperative control flow (early ~break~ with
+side effects, multi-step mutation that doesn't compose, etc.).
+
+**** ~for~ loops with ~.await~ inside them are essentially errors
+
+A ~for x in xs { x.do_async().await; }~ runs serially when the
+operations are almost always independent and could run concurrently.
+Reach for ~futures::future::join_all~, ~tokio::task::JoinSet~,
+~try_join_all~, or ~stream::iter(xs).then(|x| async { ... })~
+instead.  The serial form costs latency proportional to the number
+of items times the per-item await time, with no upside — fan-out is
+almost always free at the call site.
+
+The narrow exception is when iteration order matters and an item
+genuinely cannot start before the prior item finishes.  In that
+case the loop is fine but the comment should say so explicitly.
+
+**** ~out~ arguments are a smell
+
+A function signature like ~fn collect_things(out: &mut Vec<T>)~
+that mutates an argument instead of returning a value is the C
+idiom for "no return value channel."  Rust has return values.
+Return ~Vec<T>~ (or whatever).  Callers can ~?~, chain, or assign;
+they cannot do any of those things with a function that writes
+through a borrow.
+
+The exception is when the function legitimately appends to a
+pre-existing collection across multiple call sites (e.g. accumulating
+into a builder that has structural reasons to be passed by reference).
+Even then, prefer returning the collection if the call sites are few.
+
 *** Debugging
 
 When lacking information during debugging, permanent additions to the logs (at

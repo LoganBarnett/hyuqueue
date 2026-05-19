@@ -16,6 +16,13 @@ pub enum ItemsError {
     source: sqlx::Error,
   },
 
+  #[error("Failed to serialize item field '{field}': {source}")]
+  Serialize {
+    field: &'static str,
+    #[source]
+    source: serde_json::Error,
+  },
+
   #[error("Failed to deserialize item data: {0}")]
   Deserialize(#[from] serde_json::Error),
 }
@@ -74,6 +81,14 @@ fn parse_state(s: &str) -> ItemState {
 
 pub async fn insert(db: &Db, item: &Item) -> Result<(), ItemsError> {
   let now = Utc::now().to_rfc3339();
+  let delegate_from_str = item
+    .delegate_from
+    .as_ref()
+    .map(|d| ser(d, "delegate_from"))
+    .transpose()?;
+  let delegate_chain_str = ser(&item.delegate_chain, "delegate_chain")?;
+  let capabilities_str = ser(&item.capabilities, "capabilities")?;
+  let metadata_str = ser(&item.metadata, "metadata")?;
   sqlx::query(
     "INSERT INTO items
        (id, queue_id, title, body, source_topic_id, source,
@@ -87,15 +102,10 @@ pub async fn insert(db: &Db, item: &Item) -> Result<(), ItemsError> {
   .bind(&item.body)
   .bind(&item.source_topic_id)
   .bind(&item.source)
-  .bind(
-    item
-      .delegate_from
-      .as_ref()
-      .map(|d| serde_json::to_string(d).unwrap()),
-  )
-  .bind(serde_json::to_string(&item.delegate_chain).unwrap())
-  .bind(serde_json::to_string(&item.capabilities).unwrap())
-  .bind(serde_json::to_string(&item.metadata).unwrap())
+  .bind(delegate_from_str)
+  .bind(delegate_chain_str)
+  .bind(capabilities_str)
+  .bind(metadata_str)
   .bind(item.state.to_string())
   .bind(&now)
   .bind(&now)
@@ -106,6 +116,14 @@ pub async fn insert(db: &Db, item: &Item) -> Result<(), ItemsError> {
     source,
   })?;
   Ok(())
+}
+
+fn ser<T: serde::Serialize>(
+  value: &T,
+  field: &'static str,
+) -> Result<String, ItemsError> {
+  serde_json::to_string(value)
+    .map_err(|source| ItemsError::Serialize { field, source })
 }
 
 pub async fn get(db: &Db, id: Uuid) -> Result<Item, ItemsError> {

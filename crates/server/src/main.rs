@@ -149,18 +149,35 @@ fn create_app(state: AppState) -> Router {
 }
 
 async fn shutdown_signal() {
+  // Signal handler installation can fail (resource exhaustion, sandbox
+  // restrictions).  Log and fall back to a never-ready future rather
+  // than panicking the server — operators can still terminate via
+  // SIGKILL, and a failed handler installation shouldn't take the
+  // whole daemon down.
   let ctrl_c = async {
-    signal::ctrl_c()
-      .await
-      .expect("failed to install Ctrl+C handler");
+    if let Err(e) = signal::ctrl_c().await {
+      tracing::error!(
+        "Failed to install Ctrl+C handler: {e}; Ctrl+C will not trigger \
+         shutdown"
+      );
+      std::future::pending::<()>().await;
+    }
   };
 
   #[cfg(unix)]
   let terminate = async {
-    signal::unix::signal(signal::unix::SignalKind::terminate())
-      .expect("failed to install SIGTERM handler")
-      .recv()
-      .await;
+    match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+      Ok(mut stream) => {
+        stream.recv().await;
+      }
+      Err(e) => {
+        tracing::error!(
+          "Failed to install SIGTERM handler: {e}; SIGTERM will not trigger \
+           shutdown"
+        );
+        std::future::pending::<()>().await;
+      }
+    }
   };
 
   #[cfg(not(unix))]

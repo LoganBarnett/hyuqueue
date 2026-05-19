@@ -12,6 +12,9 @@ pub enum TopicDataError {
     source: sqlx::Error,
   },
 
+  #[error("Failed to serialize topic data value: {0}")]
+  Serialize(#[source] serde_json::Error),
+
   #[error("Failed to deserialize topic data value: {0}")]
   Deserialize(#[from] serde_json::Error),
 }
@@ -49,6 +52,8 @@ pub async fn upsert(
   key: &str,
   value: &serde_json::Value,
 ) -> Result<(), TopicDataError> {
+  let value_str =
+    serde_json::to_string(value).map_err(TopicDataError::Serialize)?;
   sqlx::query(
     "INSERT INTO topic_data (topic_id, key, value, updated_at)
      VALUES (?, ?, ?, ?)
@@ -58,7 +63,7 @@ pub async fn upsert(
   )
   .bind(topic_id)
   .bind(key)
-  .bind(serde_json::to_string(value).unwrap())
+  .bind(value_str)
   .bind(Utc::now().to_rfc3339())
   .execute(db.pool())
   .await

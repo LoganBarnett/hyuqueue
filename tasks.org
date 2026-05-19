@@ -882,7 +882,7 @@ Open questions:
   ("I have 2 defers left, better use them").  Invisible surprises
   on exhaustion.
 
-* TODO Audit pre-existing ~unwrap~ / ~expect~ across the codebase
+* DONE Audit pre-existing ~unwrap~ / ~expect~ across the codebase
 
 The global Rust guideline (see ~~/.claude/CLAUDE.md~) prohibits
 ~.unwrap()~ and ~.expect()~ in non-test code.  M1/M2 introduced new

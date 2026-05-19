@@ -16,6 +16,13 @@ pub enum QueuesError {
     source: sqlx::Error,
   },
 
+  #[error("Failed to serialize queue field '{field}': {source}")]
+  Serialize {
+    field: &'static str,
+    #[source]
+    source: serde_json::Error,
+  },
+
   #[error("Failed to deserialize queue data: {0}")]
   Deserialize(#[from] serde_json::Error),
 }
@@ -45,14 +52,16 @@ impl QueueRow {
 
 pub async fn insert(db: &Db, queue: &Queue) -> Result<(), QueuesError> {
   let now = Utc::now().to_rfc3339();
+  let tags_str = ser(&queue.tags, "tags")?;
+  let config_str = ser(&queue.config, "config")?;
   sqlx::query(
     "INSERT INTO queues (id, name, tags, config, created_at, updated_at)
      VALUES (?,?,?,?,?,?)",
   )
   .bind(queue.id.to_string())
   .bind(&queue.name)
-  .bind(serde_json::to_string(&queue.tags).unwrap())
-  .bind(serde_json::to_string(&queue.config).unwrap())
+  .bind(tags_str)
+  .bind(config_str)
   .bind(&now)
   .bind(&now)
   .execute(db.pool())
@@ -62,6 +71,14 @@ pub async fn insert(db: &Db, queue: &Queue) -> Result<(), QueuesError> {
     source,
   })?;
   Ok(())
+}
+
+fn ser<T: serde::Serialize>(
+  value: &T,
+  field: &'static str,
+) -> Result<String, QueuesError> {
+  serde_json::to_string(value)
+    .map_err(|source| QueuesError::Serialize { field, source })
 }
 
 pub async fn list(db: &Db) -> Result<Vec<Queue>, QueuesError> {
