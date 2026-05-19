@@ -25,6 +25,7 @@ home = { workspace = true }
 hyuqueue-core = { workspace = true }
 hyuqueue-lib = { workspace = true }
 hyuqueue-store = { workspace = true }
+hyuqueue-topic-host = { workspace = true }
 openidconnect = { workspace = true }
 prometheus = { workspace = true }
 reqwest = { workspace = true }

@@ -94,6 +94,10 @@ pub struct CliRaw {
 pub struct TopicConfigRaw {
   pub id: String,
   pub queue: String,
+  /// argv for the topic subprocess.  First element is the binary
+  /// path; remaining elements are passed as args.  Every topic is a
+  /// subprocess — see crates/topic-host and crates/topic-sdk.
+  pub command: Vec<String>,
   pub config: Option<toml::Value>,
 }
 
@@ -154,6 +158,7 @@ pub struct OidcConfig {
 pub struct TopicConfig {
   pub id: String,
   pub queue_name: String,
+  pub command: Vec<String>,
   pub config: serde_json::Value,
 }
 
@@ -403,9 +408,17 @@ fn resolve_topics(
         );
       }
 
+      if t.command.is_empty() {
+        return Err(ConfigError::Validation(format!(
+          "topic '{}' is missing required 'command' field (argv for the \
+           subprocess)",
+          t.id
+        )));
+      }
       Ok(TopicConfig {
         id: t.id,
         queue_name: t.queue,
+        command: t.command,
         config: json_config,
       })
     })

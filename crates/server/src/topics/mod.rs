@@ -1,9 +1,10 @@
-pub mod heartbeat;
+pub mod sink;
 
 use crate::config::TopicConfig;
-use heartbeat::HeartbeatTopic;
 use hyuqueue_core::topic::Topic;
 use hyuqueue_store::{queues, Db};
+use hyuqueue_topic_host::{SubprocessTopic, TopicDataSink};
+use sink::DbBackedSink;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::warn;
@@ -16,8 +17,8 @@ pub struct TopicEntry {
   pub config: serde_json::Value,
 }
 
-/// Maps topic IDs to their compiled-in implementation, resolved queue,
-/// and user-provided config.
+/// Maps topic IDs to a spawned topic subprocess, its resolved queue,
+/// and the user-provided config.
 pub struct TopicRegistry {
   entries: HashMap<String, TopicEntry>,
 }
@@ -35,22 +36,15 @@ impl TopicRegistry {
   }
 }
 
-/// Match each topic config entry against compiled-in topics, resolve
-/// queue names to UUIDs, and build the registry. Skips entries whose
-/// queue does not exist or whose topic ID has no compiled-in
-/// implementation.
+/// Spawn a subprocess for each configured topic and build the
+/// registry.  Topics whose queue is unknown or whose subprocess fails
+/// to spawn are logged and skipped — startup proceeds with a partial
+/// registry rather than failing the whole server.
 pub async fn build_registry(configs: &[TopicConfig], db: &Db) -> TopicRegistry {
+  let sink: Arc<dyn TopicDataSink> = Arc::new(DbBackedSink::new(db.clone()));
   let mut entries = HashMap::new();
 
   for tc in configs {
-    let topic: Arc<dyn Topic> = match tc.id.as_str() {
-      "heartbeat" => Arc::new(HeartbeatTopic),
-      other => {
-        warn!(topic = other, "No compiled-in topic implementation, skipping");
-        continue;
-      }
-    };
-
     let queue = match queues::get_by_name(db, &tc.queue_name).await {
       Ok(Some(q)) => q,
       Ok(None) => {
@@ -70,6 +64,19 @@ pub async fn build_registry(configs: &[TopicConfig], db: &Db) -> TopicRegistry {
         continue;
       }
     };
+
+    let topic =
+      match SubprocessTopic::spawn(&tc.id, &tc.command, sink.clone()).await {
+        Ok(t) => Arc::new(t) as Arc<dyn Topic>,
+        Err(e) => {
+          warn!(
+            topic = %tc.id,
+            command = ?tc.command,
+            "Failed to spawn topic subprocess: {e}, skipping"
+          );
+          continue;
+        }
+      };
 
     entries.insert(
       tc.id.clone(),

@@ -1349,6 +1349,7 @@ dependencies = [
  "hyuqueue-core",
  "hyuqueue-lib",
  "hyuqueue-store",
+ "hyuqueue-topic-host",
  "openidconnect",
  "prometheus",
  "reqwest 0.12.28",
