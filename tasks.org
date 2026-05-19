@@ -72,7 +72,7 @@ Modeling things this way keeps the data model simple and the audit
 trail clear: every disposition is an ack-shaped event, and every
 side effect is a separate event with its own meaning.
 
-* TODO Topics as out-of-process subprocesses
+* DONE Topics as out-of-process subprocesses
 
 Today every topic is compiled into the server binary.  The ~TopicRegistry~
 resolves config entries against a hard-coded match arm in
@@ -205,13 +205,6 @@ each method round-trips:
 - Optionally split out ~docs/topic-protocol.org~ as the wire spec
   (message formats, sequence diagrams for ingest/execute, error codes).
 
-*** TODO M7: graduate ~topic-example~ to its own repo
-
-Once the protocol stops moving, lift ~crates/topic-example~ into its
-own GitHub repo (~hyuqueue-topic-example~) and reference it from docs.
-Keep an inline test fixture in-tree if needed for ~cargo test~
-hermeticity.
-
 ** Open questions
 
 - *Which real topics first?*  The protocol design wants real consumers to
@@ -230,6 +223,39 @@ hermeticity.
 - *Crash recovery.*  v1: log loudly, mark the topic failed, no
   auto-restart.  Revisit once we see real failure modes.
 - *Sandboxing.*  Out of scope.  Operator vets what they install.
+
+* TODO Graduate ~topic-example~ to its own repo
+
+Originally M7 of the subprocess work; lifted out as a standalone
+TODO once the architecture itself shipped.
+
+The substantive work is done — ~crates/topic-example~ is a working
+reference binary, tested end-to-end against ~SubprocessTopic~ via a
+real spawned subprocess.  This task is about /where it lives/, not
+whether it works.
+
+** When picking this up
+
+- Move ~crates/topic-example~ into its own GitHub repo
+  (~hyuqueue-topic-example~), preserving history with
+  ~git filter-repo~.
+- Update ~docs/building-a-topic.org~ to reference the new repo URL
+  instead of the in-tree path.
+- Keep a minimal in-tree test fixture if ~cargo test --workspace~
+  hermeticity requires it — otherwise drop the workspace member
+  entry entirely.
+- Set up the new repo's own CI (cargo build/test + Nix flake check)
+  so changes can land independent of the main hyuqueue release
+  cadence.
+
+** When /not/ to pick this up
+
+Don't do this until the host ↔ topic protocol has been stable for
+long enough that we're not actively breaking the example with
+upstream changes.  Right now an in-tree example lets the
+~hyuqueue-topic-{proto,sdk,host}~ crates and ~topic-example~ all
+land in the same PR when the protocol shifts.  Graduating it
+prematurely turns every protocol change into a cross-repo dance.
 
 * DONE Activity declarations as LLM tool definitions
 
