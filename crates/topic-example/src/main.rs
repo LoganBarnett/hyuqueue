@@ -161,8 +161,22 @@ impl Topic for ExampleTopic {
 
 #[tokio::main]
 async fn main() {
+  // Logs go to stderr — stdout is reserved for the JSON-RPC channel.
+  // A subscriber that defaults to stdout would corrupt the wire
+  // format.  The server inherits this stderr.
+  let env_filter = tracing_subscriber::EnvFilter::builder()
+    .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
+    .from_env_lossy();
+  if let Err(e) = tracing_subscriber::fmt()
+    .with_writer(std::io::stderr)
+    .with_env_filter(env_filter)
+    .try_init()
+  {
+    eprintln!("topic-example: warning: failed to install tracing: {e}");
+  }
+
   if let Err(e) = hyuqueue_topic_sdk::run(ExampleTopic::new()).await {
-    eprintln!("topic-example: {e}");
+    tracing::error!("topic exited: {e}");
     std::process::exit(1);
   }
 }

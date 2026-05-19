@@ -1400,6 +1400,8 @@ dependencies = [
  "hyuqueue-topic-sdk",
  "serde_json",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 

@@ -4,34 +4,51 @@
 * Overview
 
 A *topic* is hyuqueue's integration unit.  It represents a domain of
-capability — not just a data source, but a system that can produce items,
-declare actions on those items, offer actions on /any/ item, and execute
-those actions when invoked.
+capability — not just a data source, but a system that can produce
+items, declare actions on those items, offer actions on /any/ item, and
+execute those actions when invoked.
 
-Topics are compiled into the server binary (dynamic loading is deferred).
-Each topic implements the ~Topic~ trait from ~hyuqueue-core~.
+Topics run as *independent subprocesses* that the server spawns at
+startup and talks to over JSON-RPC on stdin/stdout.  This keeps the
+core small, lets topics ship in their own repositories, and isolates
+topic crashes from the daemon.
+
+A topic author writes a Rust binary that depends on the
+~hyuqueue-topic-sdk~ crate and implements the ~hyuqueue_core::topic::Topic~
+trait.  The SDK owns the JSON-RPC loop; the author owns the trait
+implementation.
+
+The reference implementation is ~crates/topic-example/~ — a minimal
+binary exercising every RPC method.  Read it alongside this guide.
+
+For the on-the-wire protocol (what to implement if you're writing a
+topic in a language other than Rust), see ~docs/topic-protocol.org~.
 
 * The Topic trait
 
 #+begin_src rust :exports code
 #[async_trait]
 pub trait Topic: Send + Sync {
-  /// Stable identifier, e.g. "jira", "email", "orgmode".
+  /// Stable identifier (e.g. "jira", "email", "orgmode").  Must match
+  /// the `id` configured in config.toml; the host rejects mismatches
+  /// at the init handshake.
   fn id(&self) -> &str;
 
   /// Human-readable name shown in the UI.
   fn display_name(&self) -> &str;
 
-  /// Poll an external source for new items.
-  /// Called periodically by the ingest worker.
+  /// Poll an external source for new items.  Called periodically by
+  /// the server's ingest worker.  Default returns an empty vec.
   async fn ingest(
     &self,
+    ctx: &TopicCtx,
     config: &serde_json::Value,
   ) -> Result<Vec<IngestItem>, TopicError> {
     Ok(vec![])
   }
 
-  /// Activities for items whose source_topic_id matches this topic.
+  /// Activities available on items whose source_topic_id matches this
+  /// topic.  Travel with the item across instances.
   fn item_activities(&self) -> Vec<Activity> {
     vec![]
   }
@@ -41,110 +58,153 @@ pub trait Topic: Send + Sync {
     vec![]
   }
 
-  /// Execute a local activity invocation.
+  /// Execute a local activity invocation.  Only called when
+  /// `executor == Local`.
   async fn execute(
     &self,
+    ctx: &TopicCtx,
     invocation: &ActivityInvocation,
     item_id: uuid::Uuid,
   ) -> Result<Event, TopicError>;
 }
 #+end_src
 
+The ~ctx~ argument is the side channel a topic uses to push state
+updates back to the host (see "Topic data persistence" below).
+
 Every method except ~id~, ~display_name~, and ~execute~ has a default
-no-op implementation.  A topic only needs to implement what it actually
-provides.
+no-op implementation.  A topic only needs to implement what it
+actually provides.
 
-* Minimal example: the heartbeat topic
+* The binary entrypoint
 
-The heartbeat topic proves the ingest pipeline end-to-end.  It produces
-one synthetic item per cycle and supports no activities.
+A topic binary's ~main~ is four lines:
 
 #+begin_src rust :exports code
-pub struct HeartbeatTopic;
-
-#[async_trait]
-impl Topic for HeartbeatTopic {
-  fn id(&self) -> &str {
-    "heartbeat"
-  }
-
-  fn display_name(&self) -> &str {
-    "Heartbeat"
-  }
-
-  async fn ingest(
-    &self,
-    _config: &serde_json::Value,
-  ) -> Result<Vec<IngestItem>, TopicError> {
-    Ok(vec![IngestItem {
-      title: "Heartbeat".to_string(),
-      source: "heartbeat".to_string(),
-      body: None,
-      metadata: json!({ "timestamp": Utc::now().to_rfc3339() }),
-    }])
-  }
-
-  async fn execute(
-    &self,
-    invocation: &ActivityInvocation,
-    _item_id: uuid::Uuid,
-  ) -> Result<Event, TopicError> {
-    Err(TopicError::UnsupportedActivity(
-      invocation.activity_id.clone(),
-      self.id().to_string(),
-    ))
+#[tokio::main]
+async fn main() {
+  if let Err(e) = hyuqueue_topic_sdk::run(MyTopic::new()).await {
+    eprintln!("my-topic: {e}");
+    std::process::exit(1);
   }
 }
 #+end_src
+
+~run()~ owns the JSON-RPC loop on stdin/stdout end-to-end: it reads
+requests, dispatches to the trait methods, serializes responses, and
+exits cleanly on EOF or on the host's ~shutdown~ request.
 
 * Step by step
 
-** 1. Create the module
+** 1. Create the crate
 
-Add a file under ~crates/server/src/topics/~.  The naming convention is
-the topic's stable ID, e.g. ~jira.rs~ for the Jira topic.
+#+begin_src toml :exports code
+[package]
+name = "my-topic"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait = "0.1"
+hyuqueue-core = { path = "../hyuqueue/crates/core" }
+hyuqueue-topic-sdk = { path = "../hyuqueue/crates/topic-sdk" }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }
+#+end_src
+
+(Once a topic is mature enough to live in its own repository, the
+~hyuqueue-*~ deps switch from ~path~ to ~git~ or a crates.io
+publication.  See ~crates/topic-example/~ for the in-tree layout.)
 
 ** 2. Implement the Topic trait
 
-*** Required: identity
+The required surface is ~id()~, ~display_name()~, and ~execute()~.
+Override ~ingest()~ if you produce items.  Declare activities via
+~item_activities()~ and ~global_activities()~.
 
-~id()~ returns the stable string identifier.  This is stored in
-~items.source_topic_id~ and used by the registry to match config entries
-to implementations.
+See ~crates/topic-example/src/main.rs~ for a worked example that
+exercises every method.
 
-~display_name()~ returns a human-readable label for the UI.
+** 3. Wire main
 
-*** Optional: ingest
+Four-line ~main~ as shown above, plus a tracing subscriber for stderr
+(see "Logging" below — topics should log, but logs must go to stderr).
 
-Override ~ingest()~ if the topic pulls data from an external system.
-The ingest worker calls this method on a 30-second interval for each
-registered topic.
+** 4. Add the topic to config.toml
 
-~ingest()~ receives the topic's config (a ~serde_json::Value~ parsed
-from the TOML config file).  Return a ~Vec<IngestItem>~:
+#+begin_src toml :exports code
+[[topics]]
+id = "my_topic"
+queue = "inbox"
+command = ["/usr/local/bin/my-topic"]
+
+[topics.config]
+api_url = "https://api.example.com"
+api_key_cmd = "cat /run/secrets/my-topic-key"
+#+end_src
+
+- ~id~ must match the string returned by ~Topic::id()~.  The host
+  rejects mismatches at the init handshake.
+- ~queue~ is the name of the queue this topic's items land in.
+- ~command~ is the argv for the subprocess.  First element is the
+  binary path; remaining elements are passed as args.
+- ~config~ is an arbitrary TOML table passed to ~ingest()~ as JSON.
+
+*** Secret resolution
+
+Any key ending in ~_cmd~ inside ~[topics.config]~ is resolved at
+startup: the value is executed as a shell command and its stdout
+replaces the base key.  In the example above, ~api_key_cmd~ becomes
+~api_key~ containing the file contents.  Keeps secrets out of the
+config file.
+
+* Logging
+
+Topics should log freely — operational visibility into what a topic
+is doing, what external systems it's touching, and what errors it
+hits is genuinely valuable.  The server inherits each subprocess's
+stderr, so anything a topic writes there lands in the server's log
+stream alongside everything else.
+
+The hard constraint: *logs must go to stderr, never stdout*.  Stdout
+is the JSON-RPC channel; a stray ~println!~ or a tracing subscriber
+that defaults to stdout will corrupt the wire format and break the
+topic in confusing ways.
+
+The recommended pattern in ~main~, using ~tracing~ +
+~tracing-subscriber~:
 
 #+begin_src rust :exports code
-pub struct IngestItem {
-  pub title: String,
-  pub source: String,
-  pub body: Option<String>,
-  pub metadata: serde_json::Value,
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::EnvFilter;
+
+#[tokio::main]
+async fn main() {
+  let env_filter = EnvFilter::builder()
+    .with_default_directive(LevelFilter::INFO.into())
+    .from_env_lossy();
+  if let Err(e) = tracing_subscriber::fmt()
+    .with_writer(std::io::stderr)
+    .with_env_filter(env_filter)
+    .try_init()
+  {
+    eprintln!("my-topic: warning: failed to install tracing: {e}");
+  }
+
+  if let Err(e) = hyuqueue_topic_sdk::run(MyTopic::new()).await {
+    tracing::error!("topic exited: {e}");
+    std::process::exit(1);
+  }
 }
 #+end_src
 
-The server handles event creation and database insertion — the topic
-stays pure.
+~RUST_LOG~ at runtime overrides the default level
+(e.g. ~RUST_LOG=my_topic=debug,hyuqueue_topic_sdk=info~).
 
-*** Optional: activities
+See ~crates/topic-example/src/main.rs~ for the worked version.
 
-Topics can declare two kinds of activities:
-
-- *Item activities* (~item_activities~): only available on items whose
-  ~source_topic_id~ matches this topic.  These travel with the item.
-- *Global activities* (~global_activities~): available on /every/ item
-  in the queue, regardless of source.
-
-Each activity is an ~Activity~ struct:
+* Activity declarations
 
 #+begin_src rust :exports code
 pub struct Activity {
@@ -152,79 +212,73 @@ pub struct Activity {
   pub label: String,
   pub key: char,
   pub executor: ActivityExecutor,
-  pub params: Vec<ActivityParam>,
+  pub effect: ActivityEffect,
+  pub description: String,
+  pub params: serde_json::Value,  // JSON Schema
+  pub examples: Vec<ActivityExample>,
+  pub human_only: bool,
 }
 #+end_src
 
-~executor~ is either ~Local~ (run on this machine via the topic) or
-~Upstream~ (package as a signal and route via ~delegate_from~).
+| Field         | Purpose                                              |
+|---------------+------------------------------------------------------|
+| ~id~          | Stable identifier (e.g. ~jira.close~).               |
+| ~label~       | Short UI text for the key palette.                   |
+| ~key~         | Keyboard shortcut; must not conflict with vim.       |
+| ~executor~    | ~Local~ (run on this instance) or ~Upstream~         |
+|               | (package as a signal, route via ~delegate_from~).    |
+| ~effect~      | ~Read~ or ~Write~.  Outtake LLM may invoke Read      |
+|               | activities directly; Write activities only via       |
+|               | suggestion items.                                    |
+| ~description~ | Natural-language description for LLM tool selection. |
+| ~params~      | JSON Schema for the params object.  An empty object  |
+|               | schema means the activity takes no parameters.       |
+| ~examples~    | Optional few-shot examples (~{ params, outcome }~).  |
+| ~human_only~  | When true, hide from intake LLM's tool surface.      |
 
-*** Required: execute
+Activities serialize directly as MCP/OpenAI-shaped tool definitions
+with no translation layer; the LLM sees ~description~, ~params~, and
+~examples~ during tool selection.
 
-~execute()~ handles local activity invocations.  It receives the
-~ActivityInvocation~ (activity ID + parameters) and the ~item_id~.
-Return an ~Event~ describing what happened.
+*** Two scopes
 
-If the topic does not support any activities, return
-~TopicError::UnsupportedActivity~ for all invocations (as the heartbeat
-topic does).
-
-** 3. Register in the topic registry
-
-Edit ~crates/server/src/topics/mod.rs~:
-
-1. Add ~pub mod your_topic;~.
-2. In ~build_registry~, add a match arm mapping the topic ID string to
-   your struct:
-
-#+begin_src rust :exports code
-"your_topic" => Arc::new(YourTopic),
-#+end_src
-
-** 4. Add configuration
-
-Topics are configured in ~config.toml~ under a ~[[topics]]~ array:
-
-#+begin_src toml :exports code
-[[topics]]
-id = "your_topic"
-queue = "inbox"
-
-[topics.config]
-api_url = "https://api.example.com"
-api_key_cmd = "cat /run/secrets/your-api-key"
-#+end_src
-
-- ~id~ must match the string returned by ~Topic::id()~.
-- ~queue~ is the name of the queue this topic's items land in.
-- ~config~ is an arbitrary TOML table passed to ~ingest()~ as JSON.
-
-*** Secret resolution
-
-Any key ending in ~_cmd~ is resolved at startup: the value is executed
-as a shell command and its stdout replaces the base key.  In the example
-above, ~api_key_cmd~ becomes ~api_key~ containing the file contents.
-This keeps secrets out of the config file.
+- *Item activities* (~item_activities~): available only on items
+  produced by /this/ topic.  Travel with the item across instances
+  via ~item.capabilities~.
+- *Global activities* (~global_activities~): available on /every/
+  item, regardless of source.  Use sparingly — these compete for
+  keyboard shortcuts with every other topic's globals.
 
 * Topic data persistence
 
-Topics can persist state (cursors, sync tokens, etc.) via the
-~topic_data~ projection.  The store module provides:
+Topics persist state (cursors, sync tokens, counters) by calling
+~ctx.set_data~ from inside ~ingest~ or ~execute~:
 
 #+begin_src rust :exports code
-topic_data::get_all(db, topic_id)
-  -> Result<HashMap<String, serde_json::Value>>
-
-topic_data::upsert(db, topic_id, key, value)
-  -> Result<()>
+async fn ingest(
+  &self,
+  ctx: &TopicCtx,
+  _config: &serde_json::Value,
+) -> Result<Vec<IngestItem>, TopicError> {
+  let next = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
+  ctx.set_data("counter", json!(next))
+    .await
+    .map_err(|e| TopicError::Execution {
+      activity: "ingest".to_string(),
+      reason: format!("failed to persist counter: {e}"),
+    })?;
+  Ok(vec![/* ... */])
+}
 #+end_src
 
-To record a state change:
+~ctx.set_data~ emits a ~topic_data_set~ notification on the topic's
+stdout.  The host receives it, appends a ~TopicDataUpdated~ event
+(source of truth), and upserts the ~topic_data~ projection table.
 
-1. Append a ~TopicDataUpdated~ event with a ~TopicDataPayload~.
-2. Call ~topic_data::upsert~ to update the projection.
-
-Event first, projection second — the event log is the source of truth.
+Reading topic data back at startup is not yet supported — topics
+currently keep their state in process memory and lose it on restart.
+See ~tasks.org~ for the open question on inline-on-request vs
+bidirectional reads.
 
 * Error handling
 
@@ -232,20 +286,49 @@ Event first, projection second — the event log is the source of truth.
 
 | Variant                | When to use                                |
 |------------------------+--------------------------------------------|
-| ~UnsupportedActivity~  | Activity ID is not handled by this topic   |
-| ~Execution~            | An activity failed during execution        |
-| ~Configuration~        | Topic config is invalid or missing a field |
+| ~UnsupportedActivity~  | Activity ID is not handled by this topic.  |
+| ~Execution~            | An activity failed during execution.       |
+| ~Configuration~        | Topic config is invalid or missing fields. |
+
+These are mapped to JSON-RPC errors with code ~-32000~ and structured
+~data~ that the host reconstructs into typed ~TopicError~ variants.
 
 The ingest worker logs errors and continues to the next topic — a
 single topic failure does not block others.
 
+The project rule prohibits ~.unwrap()~ and ~.expect()~ in non-test
+code.  Use ~?~ or ~.map_err(...)~ to propagate, and prefer semantic
+error types over wrapping standard errors verbatim.  See
+~/Users/logan/.claude/CLAUDE.md~ "No unwrap or expect in non-test
+code" for the full rationale.
+
 * Activity palette
 
-The UI presents activities from three sources, merged into one palette:
+The UI presents activities from three sources, merged into one
+palette:
 
 1. *Item-scoped activities* from the item's source topic.
 2. *Global activities* from all registered topics.
-3. *Universal actions* (ack) provided by the system.
+3. *Universal actions* (~ack~, ~instruct_outtake~) provided by the
+   system.
 
 The keyboard shortcut (~Activity.key~) must not conflict with vim
 bindings or other activities in the palette.
+
+* Lifecycle and process management
+
+The server spawns one subprocess per configured topic at startup,
+performs the ~init~ handshake to discover declared activities, and
+keeps the process alive for the duration of the server's run.
+Stderr from the topic is inherited so any logging passes through to
+the server's stderr.
+
+On server shutdown (or when a topic is removed from config and the
+server restarts), the host sends ~SIGKILL~ via ~start_kill()~.  v1
+does not bother with a graceful ~shutdown~ RPC + grace period.
+
+If the subprocess exits unexpectedly, the host's reader task observes
+EOF on stdout, drops all in-flight oneshots (in-flight requests
+return ~TopicError::Execution~), and the topic becomes effectively
+inert — no auto-restart in v1.  See ~tasks.org~ for the crash
+recovery open question.

@@ -148,7 +148,7 @@ Topic stderr passes through to server stderr, tagged with topic id.
 
 ** Milestones
 
-*** TODO M1: protocol crate
+*** DONE M1: protocol crate
 
 Define the wire envelope, request/response types, method-name constants,
 and error mapping from ~TopicError~ → JSON-RPC ~error.code~/~data~.  No
@@ -160,21 +160,21 @@ examples, ~human_only~ flag).  See "Activity declarations as LLM tool
 definitions" below — that work and this crate land together because the
 ~init~ response serializes the new ~Activity~ shape.
 
-*** TODO M2: SDK
+*** DONE M2: SDK
 
 ~run(topic: impl Topic)~ that owns the JSON-RPC loop on stdin/stdout.
 Reads requests, dispatches by method name, serializes responses, emits
 notifications when the topic asks to persist data.  Exits cleanly on
 EOF or on receiving ~shutdown~.
 
-*** TODO M3: host wrapper
+*** DONE M3: host wrapper
 
 ~SubprocessTopic~ in ~topic-host~ that spawns the child, performs the
 ~init~ handshake, multiplexes outgoing requests by id, dispatches
 incoming notifications, and implements ~core::Topic~ so existing
 workers don't change.
 
-*** TODO M4: topic-example binary
+*** DONE M4: topic-example binary
 
 A binary crate that exercises every RPC method.  Not modelled on any
 real domain — the example only needs to be /something/ so we can prove
@@ -187,7 +187,7 @@ each method round-trips:
   ~topic_data_set~ notification, so the read-during-ingest +
   write-via-notification path is exercised.
 
-*** TODO M5: rewire registry, delete heartbeat
+*** DONE M5: rewire registry, delete heartbeat
 
 - Remove ~crates/server/src/topics/heartbeat.rs~.
 - Remove ~pub mod heartbeat~ and the ~"heartbeat"~ match arm in
@@ -197,7 +197,7 @@ each method round-trips:
 - Update ~AppState.topics~ to hold the new registry shape.
 - Update integration tests to spawn ~topic-example~.
 
-*** TODO M6: docs rewrite
+*** DONE M6: docs rewrite
 
 - Collapse ~docs/building-a-topic.org~ to a single track: implement the
   trait via the SDK, package the binary, point ~config.toml~ at it.
@@ -231,7 +231,7 @@ hermeticity.
   auto-restart.  Revisit once we see real failure modes.
 - *Sandboxing.*  Out of scope.  Operator vets what they install.
 
-* TODO Activity declarations as LLM tool definitions
+* DONE Activity declarations as LLM tool definitions
 
 Today an ~Activity~ has ~id~, ~label~, ~key~, ~executor~, ~params:
 Vec<ActivityParam>~.  That's enough for a human key palette but not for

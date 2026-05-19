@@ -1,0 +1,389 @@
+#+title:     Topic Protocol
+#+language:  en
+
+* Overview
+
+The hyuqueue server and topic subprocesses communicate over
+*JSON-RPC 2.0 over newline-delimited JSON* on the topic's stdin and
+stdout.  Each request, response, or notification is a single line of
+JSON terminated by ~\n~.  Stderr is unstructured and passes through
+to the server's stderr verbatim — use it for logging.
+
+This document defines the on-the-wire protocol.  Rust topic authors
+can ignore it entirely and use ~hyuqueue-topic-sdk~ (see
+~building-a-topic.org~); topic authors in other languages implement
+against this spec.
+
+Reference implementations in this repository:
+
+- ~crates/topic-sdk/src/runner.rs~ — the topic side of the loop.
+- ~crates/topic-host/src/subprocess.rs~ — the host side.
+- ~crates/topic-proto/~ — wire types shared by both.
+
+* Envelope shape
+
+** Request (host → topic)
+
+#+begin_src json :exports code
+{
+  "jsonrpc": "2.0",
+  "method": "<method>",
+  "params": { /* per-method payload */ },
+  "id": 42
+}
+#+end_src
+
+~id~ is a monotonically increasing unsigned integer chosen by the
+host.  The topic correlates responses back by echoing this id.
+
+** Notification (topic → host)
+
+#+begin_src json :exports code
+{
+  "jsonrpc": "2.0",
+  "method": "<method>",
+  "params": { /* per-method payload */ }
+}
+#+end_src
+
+No ~id~ field.  No response is expected.  Used for messages the topic
+pushes spontaneously (currently only ~topic_data_set~).
+
+** Success response (topic → host)
+
+#+begin_src json :exports code
+{
+  "jsonrpc": "2.0",
+  "result": { /* per-method payload */ },
+  "id": 42
+}
+#+end_src
+
+** Error response (topic → host)
+
+#+begin_src json :exports code
+{
+  "jsonrpc": "2.0",
+  "error": {
+    "code": -32000,
+    "message": "Activity 'foo' is not supported by topic 'example'",
+    "data": { /* optional structured detail */ }
+  },
+  "id": 42
+}
+#+end_src
+
+The ~jsonrpc~ field must be the literal string ~"2.0"~ on every
+envelope.  Wrong-version envelopes fail to parse on both sides.
+
+* Methods
+
+Direction: ~host → topic~ unless noted.
+
+| Method            | Direction      | Purpose                            |
+|-------------------+----------------+------------------------------------|
+| ~init~            | host → topic   | Handshake; topic declares itself.  |
+| ~ingest~          | host → topic   | Poll for new items.                |
+| ~execute~         | host → topic   | Invoke an activity.                |
+| ~shutdown~        | host → topic   | Request graceful exit.             |
+| ~topic_data_set~  | topic → host * | Persist a key/value (notification).|
+
+* Per-method payloads
+
+** ~init~
+
+The first method the host sends after spawning the topic.  The topic
+must respond before any other request is sent.
+
+*** Request
+
+Empty object (reserved for future negotiation):
+
+#+begin_src json :exports code
+{}
+#+end_src
+
+*** Response
+
+#+begin_src json :exports code
+{
+  "id": "example",
+  "display_name": "Example",
+  "supports_ingest": true,
+  "supports_execute": true,
+  "item_activities": [ /* Activity[] */ ],
+  "global_activities": [ /* Activity[] */ ]
+}
+#+end_src
+
+The ~id~ must match the ~id~ the host has configured for this
+subprocess in ~config.toml~.  The host rejects mismatches with a
+fatal error.
+
+~supports_ingest~ and ~supports_execute~ are advisory: a topic that
+returns ~false~ here can still receive these requests (and is
+expected to handle them, even if trivially).  v1 implementations
+should report ~true~ for both.
+
+~item_activities~ and ~global_activities~ are arrays of ~Activity~
+objects (see "Activity shape" below).
+
+** ~ingest~
+
+Polls the topic for new items.  Called by the server's ingest
+worker on a fixed interval.
+
+*** Request
+
+#+begin_src json :exports code
+{
+  "config": { /* per-topic config from config.toml */ }
+}
+#+end_src
+
+*** Response
+
+#+begin_src json :exports code
+{
+  "items": [
+    {
+      "title": "Item title",
+      "source": "topic_id",
+      "body": null,
+      "metadata": { /* arbitrary topic-specific data */ }
+    }
+  ]
+}
+#+end_src
+
+Returning an empty ~items~ array is normal — the host calls ~ingest~
+on every cycle whether or not there's anything to report.
+
+** ~execute~
+
+Invokes an activity on an item.
+
+*** Request
+
+#+begin_src json :exports code
+{
+  "invocation": {
+    "activity_id": "topic.activity",
+    "params": { /* per-activity params */ }
+  },
+  "item_id": "uuid-string"
+}
+#+end_src
+
+*** Response
+
+#+begin_src json :exports code
+{
+  "event": {
+    "id": "uuid",
+    "event_type": "action_taken",
+    "actor": { "topic": "topic_id" },
+    "locality": "local",
+    "payload": { /* event-specific */ },
+    "created_at": "2026-05-18T00:00:00+00:00"
+  }
+}
+#+end_src
+
+The topic constructs the ~Event~ with a fresh UUID, the current
+timestamp, and a payload describing what happened.
+
+** ~shutdown~
+
+Asks the topic to exit cleanly.
+
+*** Request
+
+Empty object:
+
+#+begin_src json :exports code
+{}
+#+end_src
+
+*** Response
+
+Null result, echoing the request id:
+
+#+begin_src json :exports code
+{ "jsonrpc": "2.0", "result": null, "id": <id> }
+#+end_src
+
+After sending the response, the topic should exit.  The host's v1
+implementation sends ~SIGKILL~ shortly after regardless, so the
+shutdown response is more of an acknowledgment than a contract.
+
+** ~topic_data_set~ (notification, topic → host)
+
+Persists a key/value pair into the topic's ~topic_data~ projection
+on the host side.
+
+*** Payload
+
+#+begin_src json :exports code
+{
+  "key": "cursor",
+  "value": 42
+}
+#+end_src
+
+The host already knows which topic sent the notification (it owns
+the subprocess identity), so the payload deliberately does *not*
+carry ~topic_id~.  Including it would let a topic claim another
+topic's identity over the wire.
+
+The host appends a ~TopicDataUpdated~ event (source of truth) and
+upserts the projection.  Notification, so no response.
+
+* Activity shape
+
+The objects inside ~item_activities~ and ~global_activities~ in the
+init response:
+
+#+begin_src json :exports code
+{
+  "id": "example.reset",
+  "label": "Reset",
+  "key": "r",
+  "executor": "local",
+  "effect": "write",
+  "description": "Reset the example counter to zero.",
+  "params": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "examples": [],
+  "human_only": false
+}
+#+end_src
+
+| Field         | Values / shape                                       |
+|---------------+------------------------------------------------------|
+| ~id~          | Stable identifier (e.g. ~jira.close~).               |
+| ~label~       | Short UI text for the key palette.                   |
+| ~key~         | Single-character keyboard shortcut.                  |
+| ~executor~    | ~"local"~ or ~"upstream"~.                           |
+| ~effect~      | ~"read"~ or ~"write"~.                               |
+| ~description~ | Natural-language description for LLM tool selection. |
+| ~params~      | JSON Schema document for the params object.          |
+| ~examples~    | Array of ~{ params, outcome }~ pairs (optional).     |
+| ~human_only~  | When true, hidden from intake LLM's tool surface.    |
+
+* Error codes
+
+| Code   | Meaning                                                  |
+|--------+----------------------------------------------------------|
+| -32000 | Topic-originated error.  ~data~ field carries structured |
+|        | detail (see "Topic error data" below).                   |
+| -32601 | Method not found.  Topic received an unknown method.     |
+| -32602 | Invalid params.  Topic could not deserialize the params. |
+
+** Topic error data
+
+When ~code~ is ~-32000~, the ~data~ field carries one of:
+
+*** UnsupportedActivity
+
+#+begin_src json :exports code
+{
+  "kind": "unsupported_activity",
+  "activity_id": "foo",
+  "topic_id": "example"
+}
+#+end_src
+
+*** Execution
+
+#+begin_src json :exports code
+{
+  "kind": "execution",
+  "activity": "ingest",
+  "reason": "smtp connection failed"
+}
+#+end_src
+
+*** Configuration
+
+#+begin_src json :exports code
+{
+  "kind": "configuration",
+  "detail": "missing required field 'api_url'"
+}
+#+end_src
+
+The host parses ~data~ to reconstruct typed errors after
+deserializing.  Topics in non-Rust languages should match this shape
+exactly so the host's parser succeeds.
+
+* Sequence of events
+
+** Normal ingest cycle
+
+#+begin_example
+host → topic:  {"jsonrpc":"2.0","method":"init","params":{},"id":0}
+topic → host:  {"jsonrpc":"2.0","result":{"id":"example",...},"id":0}
+
+(host's ingest worker fires periodically)
+
+host → topic:  {"jsonrpc":"2.0","method":"ingest","params":{"config":{}},"id":1}
+topic → host:  {"jsonrpc":"2.0","method":"topic_data_set","params":{"key":"cursor","value":1}}
+topic → host:  {"jsonrpc":"2.0","result":{"items":[...]},"id":1}
+#+end_example
+
+The notification can appear before or after the response — both are
+on the same stream, ordering is whatever the topic writes.
+
+** Execute with error
+
+#+begin_example
+host → topic:  {"jsonrpc":"2.0","method":"execute","params":{...},"id":7}
+topic → host:  {
+                 "jsonrpc":"2.0",
+                 "error":{
+                   "code":-32000,
+                   "message":"Activity 'foo' is not supported by topic 'example'",
+                   "data":{"kind":"unsupported_activity","activity_id":"foo","topic_id":"example"}
+                 },
+                 "id":7
+               }
+#+end_example
+
+** Shutdown
+
+#+begin_example
+host → topic:  {"jsonrpc":"2.0","method":"shutdown","params":{},"id":99}
+topic → host:  {"jsonrpc":"2.0","result":null,"id":99}
+(topic exits)
+#+end_example
+
+* Lifecycle constraints
+
+- The host sends ~init~ first.  The topic must respond before any
+  other request arrives.
+- The topic must never send a response without a matching incoming
+  request id.  Responses to unknown ids are logged as warnings on
+  the host and otherwise ignored.
+- The topic must never send a request to the host.  The protocol is
+  intentionally asymmetric — topics can only send responses to
+  host-initiated requests or notifications.
+- Multiple in-flight requests are allowed.  The host correlates by
+  ~id~; responses may be returned in any order.  Topics that process
+  requests sequentially are also fine.
+- On stdin EOF (the host closed the channel), the topic should exit
+  cleanly.
+
+* Versioning
+
+There is no protocol version negotiation in v1.  The wire shape is
+fixed; future changes will either be additive (new methods, new
+fields with backward-compatible defaults) or accompanied by a
+version field in the ~init~ handshake.
+
+The single-user state of the project means version churn is cheap
+right now — if the protocol changes, all topic binaries get rebuilt
+together.
