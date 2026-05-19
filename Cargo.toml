@@ -6,6 +6,7 @@ members = [
   "crates/lib",
   "crates/server",
   "crates/store",
+  "crates/topic-host",
   "crates/topic-proto",
   "crates/topic-sdk",
   "crates/tui",
@@ -95,6 +96,7 @@ tempfile = "3"
 hyuqueue-lib = { path = "crates/lib" }
 hyuqueue-core = { path = "crates/core" }
 hyuqueue-store = { path = "crates/store" }
+hyuqueue-topic-host = { path = "crates/topic-host" }
 hyuqueue-topic-proto = { path = "crates/topic-proto" }
 hyuqueue-topic-sdk = { path = "crates/topic-sdk" }
 
