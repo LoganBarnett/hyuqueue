@@ -6,6 +6,7 @@ members = [
   "crates/lib",
   "crates/server",
   "crates/store",
+  "crates/topic-example",
   "crates/topic-host",
   "crates/topic-proto",
   "crates/topic-sdk",
