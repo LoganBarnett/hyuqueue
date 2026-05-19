@@ -911,3 +911,27 @@ startup with a clean error message rather than panicking.
 
 Run ~rg '\.unwrap\(|\.expect\(' --type rust crates/~ excluding
 ~tests/~ and ~#[cfg(test)]~ blocks to drive the cleanup.
+
+* TODO Sync with rust-template
+
+hyuqueue was scaffolded from ~rust-template~ when it was first
+emitted.  The template has moved on since, and the direction is to
+replace boilerplate we've written ourselves with parts of
+~rust-template~ proper — not just a copy-the-diff exercise.
+
+Fairly high priority once we're done chasing MVP, but not /right/
+now — features that prove out the architecture come first.  Picking
+this up too early risks rebasing in the middle of active LLM-loop
+and topic work.
+
+When picking this up, check ~rust-template~'s ~README.org~ for the
+compliance guidance and follow it from there.
+
+** Why this isn't free to defer indefinitely
+
+Every new module we add against an outdated template baseline is
+work that has to be reconsidered at sync time.  The longer we wait,
+the bigger the rebase and the more we second-guess our own
+divergences vs the template's.  Aim to sync before the workspace
+grows substantially past its current shape (i.e. before the LLM
+loops and a real first-party topic land).
