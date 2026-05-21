@@ -72,6 +72,49 @@ Modeling things this way keeps the data model simple and the audit
 trail clear: every disposition is an ack-shaped event, and every
 side effect is a separate event with its own meaning.
 
+** Queues are FIFO containers; there are no named buckets
+
+A *queue* is a FIFO container with a priority/jump-line affordance.
+Items live in zero or more queues; queue membership is what
+determines where an item is in the system.  The four system queues
+are reserved by name:
+
+| Queue     | What's in it                                          |
+|-----------+-------------------------------------------------------|
+| ~intake~  | Items waiting for the intake LLM.                     |
+| ~human~   | Items waiting for human attention.                    |
+| ~outtake~ | Items waiting for the outtake LLM after a human ack.  |
+| ~errors~  | Items whose processing hit an unrecoverable failure.  |
+
+There are *no user-named buckets* ("inbox," "reading-list," etc.) —
+no folders, no subfolders.  Slicing into the queue for a session
+("I'm just processing email today") is a *filter* applied to the
+existing single queue, not a separate container.  Filters are a
+presentation concern; the underlying data model has one queue per
+system role and nothing else.
+
+This kept the existing ~queues~ table and the per-item ~queue_id~
+field from carrying real complexity for what's really a UI lens.
+See the "Queue model as foundation" TODO for the migration.
+
+*** Why this matters for the design
+
+- Every worker (intake, outtake, outbound, future automation) is a
+  consumer of a named system queue.  Workers ~dequeue~; they don't
+  query "items WHERE state = X."
+- The four halt signals from the previous concept map directly to
+  queue transitions: ~ack~ takes an item out of ~human~;
+  ~auto_resolved~ takes it out of ~intake~ without entering
+  ~human~; ~defer_to_human~ moves it from ~intake~ to ~human~;
+  ~surface_suggestion~ enqueues a /new/ item into ~human~ (the
+  suggestion); ~nothing_to_surface~ takes an item out of ~outtake~
+  with nothing else happening.
+- "Push to the front of the queue" is a real primitive — high
+  priority, dequeued before lower-priority items regardless of
+  age.  Outtake uses this when it wants to interrupt a long human
+  processing session with a suggestion that could save the human
+  from manually working through the remaining items.
+
 * DONE Topics as out-of-process subprocesses
 
 Today every topic is compiled into the server binary.  The ~TopicRegistry~
@@ -315,6 +358,195 @@ directly to the LLM client.  Exposing hyuqueue as an MCP server (so
 external agents like Claude Desktop can drive items) is a possible
 later move, not v1.
 
+* TODO Queue model as foundation (prerequisite for the intake LLM)
+
+Replace the current implicit-queue model (~Item.state~ enum +
+~Item.queue_id~ + per-item-named ~queues~ table) with explicit
+first-class queues.  See "Queues are FIFO containers" in the
+Concepts section above for the conceptual model.
+
+This is a foundational refactor that must land *before* the intake
+LLM agentic loop, because the intake worker is written against the
+queue API (~queue.dequeue("intake", worker_id)~), not against the
+state field.  Building intake against the old model and then
+retrofitting to queues means rewriting the worker.
+
+** Removed machinery
+
+- ~crates/store/src/queues.rs~ — the named-bucket table goes away.
+- ~crates/core/src/queue.rs~ — the ~Queue~ type goes away.
+- ~Item.queue_id~ field — items no longer reference a named queue.
+- ~Item.state~ field — derived from queue membership ("is the item
+  in any queue?" / "which queue?").
+- ~queue_name~ / ~queue~ field in topic config — topics no longer
+  declare a destination queue; ingested items land in the system
+  ~intake~ queue.
+- ~queues::get_by_name~ lookups in the topic registry builder.
+
+** Added machinery
+
+*** Schema
+
+#+begin_src sql :exports code
+CREATE TABLE queue_items (
+  queue_name        TEXT NOT NULL,    -- "intake" | "human" | "outtake" | "errors"
+  item_id           TEXT NOT NULL,    -- UUID
+  priority          INTEGER NOT NULL DEFAULT 0,  -- higher = sooner
+  enqueued_at       TEXT NOT NULL,    -- RFC3339
+  claimed_by        TEXT,             -- worker id; NULL when available
+  claimed_at        TEXT,             -- when the claim was taken
+  lease_expires_at  TEXT,             -- RFC3339; item is reclaimable when this passes
+  PRIMARY KEY (queue_name, item_id)
+);
+CREATE INDEX idx_queue_items_dispatch
+  ON queue_items (queue_name, priority DESC, enqueued_at);
+#+end_src
+
+The dequeue query treats an item as available when ~claimed_by IS
+NULL OR lease_expires_at < datetime('now')~ — stale leases
+self-recover with no background reaper.  A worker that crashed
+mid-claim doesn't lock its item forever; the next dequeue from any
+other worker picks it up after the lease expires.
+
+*** Queue API
+
+A small ~crates/store/src/queue.rs~ module exposing:
+
+| Operation                                              | Semantics                                |
+|--------------------------------------------------------+------------------------------------------|
+| ~enqueue(queue, item_id, priority)~                    | Append at given priority.                |
+| ~urgent_enqueue(queue, item_id)~                       | Sugar for high-priority enqueue.         |
+| ~dequeue(queue, worker_id, lease) -> Option<Item>~     | Atomic claim with lease.                 |
+| ~renew_lease(queue, item_id, worker_id, new_duration)~ | Extend lease; requires worker_id match.  |
+| ~release(queue, item_id, worker_id)~                   | Clear claim; requires worker_id match.   |
+| ~complete(queue, item_id, worker_id)~                  | Remove from queue; requires match.       |
+| ~move_item(item_id, from, to, worker_id)~              | Atomic move; worker_id holds from-lease. |
+| ~list(queue, filter) -> Vec<...>~                      | Observability; supports filters.         |
+| ~depth(queue)~                                         | Count of available items.                |
+
+Mutating operations (~renew_lease~, ~release~, ~complete~,
+~move_item~) require a matching ~worker_id~.  The UPDATE WHERE
+clause includes ~claimed_by = ?~; if no rows are affected, the call
+returns an error.  This is defensive against accidents and a
+correctness requirement once multiple workers (or federated
+clients) share a queue — worker A must not be able to mark worker
+B's claim as complete.
+
+Claims are serialized via SQLite ~BEGIN IMMEDIATE~ transactions
+(SQLite lacks ~FOR UPDATE SKIP LOCKED~).  For one worker per system
+queue this is academic; the API doesn't change if we ever revisit.
+
+*** Lease semantics
+
+Every dequeue takes an explicit lease duration.  The worker is
+responsible for renewing before expiration if its work outlasts
+the lease.  Per-call lease durations let workers self-adjust
+(an LLM loop that's running slow can renew for longer), with
+per-role defaults supplied by config.
+
+| Role     | Default lease | Renewal cadence                             |
+|----------+---------------+---------------------------------------------|
+| Intake   | 30s           | Renew on every agentic-loop turn.           |
+| Outtake  | 5min          | Renew per turn.                             |
+| Human    | 5min          | Client renews on meaningful activity        |
+|          |               | (browsing item actions even without firing  |
+|          |               | one).  Idle clients let the lease drop      |
+|          |               | naturally so another client can pick up.    |
+
+Worker IDs are opaque strings the worker self-generates.
+Convention: ~<role>-<uuid>~ for now (e.g. ~intake-3f2a...~), with
+room for ~<instance_addr>/<role>-<uuid>~ once federation lands.
+The queue layer doesn't parse them — string equality is the only
+operation.
+
+*** Ack vs complete: different layers
+
+Ack is the human's halt signal — pure disposition, no other
+semantics (see Concepts above).  Complete is the queue operation
+that follows from an ack.  When the human acks an item:
+
+1. System records an ~Ack~ event.
+2. Queue layer calls ~complete("human", item_id, worker_id)~.
+3. Item leaves the human queue.
+4. Outtake worker eventually dequeues it from the outtake queue
+   (which it was already in, enqueued at the time the human queue
+   received it).
+
+Two layers, one user-visible operation.  Keeps the
+"ack-carries-no-approval-semantics" concept clean: ack is intent;
+complete is the consequence at the queue layer.
+
+*** System queue names
+
+A constants module exposes the four reserved names:
+
+#+begin_src rust :exports code
+pub mod system_queue {
+  pub const INTAKE: &str = "intake";
+  pub const HUMAN: &str = "human";
+  pub const OUTTAKE: &str = "outtake";
+  pub const ERRORS: &str = "errors";
+}
+#+end_src
+
+No table for queue names — they're just strings.  The schema's
+PRIMARY KEY tolerates any string, so adding a future system queue
+is a constant + a worker; no migration.
+
+*** Events
+
+New event types for the audit trail:
+
+- ~ItemEnqueued { queue, item_id, priority }~
+- ~ItemDequeued { queue, item_id, claimed_by }~
+- ~ItemReleased { queue, item_id }~
+- ~ItemCompleted { queue, item_id }~
+- ~ItemMoved { item_id, from_queue, to_queue }~
+
+These supplement the existing item-lifecycle events; they don't
+replace them.
+
+** Filters as the replacement for named buckets
+
+Filters operate on item fields the data model already has:
+~source~, ~source_topic_id~, ~metadata~ JSON fields, etc.  The
+filter expression itself is a presentation-layer concern (CLI flags,
+saved views in the TUI, Emacs-side queries).  The data layer just
+needs ~list(queue, filter)~ to accept a filter parameter.
+
+For v1 a filter can be a simple ~Option<SourceFilter>~ struct (e.g.,
+~{ source: Some("email") }~).  Richer expressions land later.
+
+** Migration
+
+A single migration drops the old machinery and creates ~queue_items~.
+Pre-MVP there's no installed-base concern; the migration is real but
+not dangerous.
+
+** MVP vs deferred for multi-worker
+
+- *MVP:* schema column, API signatures (with lease + worker_id
+  parameters), dequeue's stale-lease ~WHERE~ clause, worker_id
+  enforcement on mutating operations.  One worker per role
+  exercises the lease semantics correctly even when there's no
+  contention.  Wedging this in now keeps the model ready without
+  the validation cost.
+- *Deferred:* genuine multi-worker stress testing (parallel intake
+  workers racing on the same queue), lease-conflict UX (what does
+  the TUI show when another client has the item the user wants?),
+  federation routing of leased items across instances.  None of
+  these require schema changes — the model is ready.
+
+** Out of scope
+
+- ~outbound_signals~ stays separate.  Signals aren't items (different
+  payload, different lifecycle); unifying just makes the schema
+  fight the type system.
+- The error-topic-recursion idea (after errors sit idle for some
+  period, wrap and re-enqueue to intake as "what do you want to do
+  with these?").  Worth doing post-MVP — outtake can then learn
+  patterns about silent dismissals.
+
 * TODO Intake LLM as agentic loop
 
 The intake LLM is not a one-shot call.  It runs an agentic loop that
@@ -349,13 +581,110 @@ Filtered to what is applicable to /this/ item:
   forces ~defer_to_human(reason: "intake exceeded turn budget")~.
 - Each tool call (activity invocation, hunch write, halt) produces an
   event in the log.  Audit trail is the event stream — same as ack.
+- *Architectural constraint:* the tool surface passed to each turn is
+  a ~Vec<ToolDefinition>~ computed per-turn, not a fixed list captured
+  at loop start.  v1 will eager-load the full surface for each item,
+  but this shape is what lets phase 2 (lazy tool loading via a
+  catalog + ~request_topic_tools~ meta-tool) be additive instead of a
+  rewrite.  See the lazy-loading TODO below.
 
 ** Confidence gating
 
 Activities the LLM invokes during the loop are subject to the source
-policy's confidence threshold.  The LLM declares confidence per call
-(or the policy applies a default).  Below threshold → the loop forces
-~defer_to_human~.
+instruction's confidence threshold.  The LLM declares confidence per
+call (or the instruction applies a default).  Below threshold → the
+loop forces ~defer_to_human~.
+
+* TODO Lazy tool loading for the intake LLM (phase 2)
+
+Early-after-MVP follow-up to the intake LLM loop.  Eager-loading
+every topic's activities into context on every turn scales badly
+with topic count, especially on the local models that are the
+stated primary target — 7-13B models often degrade past 20-30
+tools in scope.
+
+The plan:
+
+- *Always-in-context* per item:
+  + Source topic's item activities (only the source applies).
+  + A small set of universal globals (~ack~, ~instruct_outtake~).
+  + Halt tools (~auto_resolved~, ~defer_to_human~).
+  + Read tools (history, recent acks, similar items).
+  + Matching source instructions (filtered by the item's source
+    pattern — independent context optimization).
+  + A *catalog* — one-line prose summary per other installed
+    topic.  Stays compact because it's prose, not JSON Schema.
+- *Lazy-loaded* via a meta-tool:
+  + Other topics' activities expanded on demand via
+    ~request_topic_tools(topic_id)~.  The tool's response is the
+    full JSON-Schema'd tool definitions, which become available on
+    the next turn.
+
+Worked example: an item from the RSS topic that needs to be filed
+into org-mode.  Intake has RSS's activities loaded and sees in the
+catalog that "orgmode" is installed.  It calls
+~request_topic_tools("orgmode")~, the org-mode tools land in scope,
+it fires the file activity on the next turn.
+
+** Why this is phase 2
+
+- Cost of building it: non-trivial.  Needs the catalog format,
+  the meta-tool wired into the dispatcher, and the loop's tool
+  surface to grow turn-over-turn (already an M1 architectural
+  decision; see the constraint in the intake-LLM section above).
+- Cost of deferring it: low.  With a small number of topics (1-5)
+  in early MVP, the eager-load surface is fine.  Lazy loading
+  only becomes pressure when the topic count is real.
+- *Trigger:* implement when either (a) we install more than 3-4
+  topics or (b) testing on a local model shows tool-selection
+  accuracy degrade with the eager surface.
+
+** Tool catalog vs source instructions
+
+Separate concerns even though they both flow into the LLM's
+context window:
+
+- *Tool catalog* — "what /can/ this LLM do, and where do those
+  capabilities live."  Lazy-loadable by topic.
+- *Source instructions* — "what guidance has the human given about
+  how to handle items of this kind."  Naturally filtered by the
+  item's source pattern (a pre-existing optimization, not lazy
+  loading).
+
+Treating these separately keeps the design clean.  Conflating them
+into a "topic context" blob mixes "available tools" with "guidance
+about how to use them" and that's harder to reason about.
+
+* TODO Rename ~policy~ → ~instruction~ across the codebase
+
+"Policy" is loaded in software (permissions, access control,
+governance).  What we actually mean is "instructions to the intake
+LLM about how to handle items matching a pattern" — natural
+language guidance, not access rules.
+
+Symmetric with ~instruct_outtake~ already established as the
+universal activity for human-→-outtake guidance.  Keeps the
+vocabulary consistent: intake follows /source instructions/
+(stored), outtake follows /meta-item instructions/ (per-item).
+
+** Touch points
+
+- ~crates/core/src/policy.rs~ — file rename to ~instruction.rs~;
+  ~SourcePolicy~ → ~SourceInstruction~; ~PolicyExample~ →
+  ~InstructionExample~.
+- ~crates/core/src/event.rs~ — ~EventType::PolicyUpdated~ →
+  ~EventType::InstructionUpdated~.  Event payload field names if
+  they reference "policy".
+- ~crates/store/migrations/~ — new migration renaming
+  ~source_policies~ → ~source_instructions~.  Pre-MVP there's no
+  installed-base concern, but the migration still has to be a
+  proper one to keep the chain reproducible.
+- ~tasks.org~ — sweep references in the outtake LLM section
+  (~propose_policy~ → ~propose_instruction~, "Type A: intake-policy
+  revision" → "intake-instruction revision", etc.).
+- Any other prose / docs that say "policy."
+
+Do this as its own focused commit, not bundled with feature work.
 
 * TODO Outtake LLM as agentic loop with hunches and suggestion items
 
