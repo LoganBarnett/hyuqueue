@@ -41,6 +41,17 @@ pub enum EventType {
   PolicyUpdated,
   /// A topic's persistent key-value data was updated.
   TopicDataUpdated,
+  /// An item was added to a queue.
+  ItemEnqueued,
+  /// An item was claimed by a worker (lease started).
+  ItemDequeued,
+  /// A worker released its claim on an item (lease cleared, item
+  /// returned to the queue for any worker to pick up).
+  ItemReleased,
+  /// An item was removed from a queue.
+  ItemCompleted,
+  /// An item moved atomically from one queue to another.
+  ItemMoved,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

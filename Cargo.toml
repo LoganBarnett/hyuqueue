@@ -39,6 +39,7 @@ tap = "1.0"
 # Async
 tokio = { version = "1.41", features = ["full"] }
 async-trait = "0.1"
+futures = "0.3"
 
 # CLI parsing
 clap = { version = "4.5", features = ["derive", "env"] }

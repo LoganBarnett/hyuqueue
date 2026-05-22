@@ -1,15 +1,43 @@
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+//! Queue primitives.
+//!
+//! A queue is a FIFO container with a priority/jump-line affordance.
+//! Items live in zero or more queues; queue membership is what
+//! determines where an item is in the system.  There are no
+//! user-named buckets — slicing a queue for a session ("just process
+//! email today") is a filter applied to the single queue per system
+//! role, not a separate container.
+//!
+//! The data layer for queue operations lives in `hyuqueue-store::queue`.
+//! Domain types live here.
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Queue {
-  pub id: Uuid,
-  pub name: String,
-  /// Tags used for view filtering (e.g. "work", "personal").
-  pub tags: Vec<String>,
-  /// Topic-specific configuration (ingestion settings, credentials, etc.).
-  pub config: serde_json::Value,
-  pub created_at: DateTime<Utc>,
-  pub updated_at: DateTime<Utc>,
+use serde::{Deserialize, Serialize};
+
+/// Reserved name of the queue holding items awaiting intake LLM
+/// processing.
+pub const INTAKE: &str = "intake";
+
+/// Reserved name of the queue holding items awaiting human attention.
+pub const HUMAN: &str = "human";
+
+/// Reserved name of the queue holding items awaiting outtake LLM
+/// processing after a human ack.
+pub const OUTTAKE: &str = "outtake";
+
+/// Reserved name of the queue holding items whose processing hit an
+/// unrecoverable failure.  Items here typically need software
+/// engineering attention rather than triage; see the error-topic
+/// recursion idea in `tasks.org` for the post-MVP plan.
+pub const ERRORS: &str = "errors";
+
+/// Filter expression applied to `list(queue, filter)` operations.
+///
+/// v1 supports filtering by `source` only.  Richer expressions
+/// (source_topic_id, metadata JSON paths, full-text search) land
+/// later — the data layer just needs to accept this struct, the
+/// presentation layer (CLI, TUI, Emacs) builds it from user input.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SourceFilter {
+  /// Only return items whose `source` field equals this string.
+  /// `None` means no filter.
+  pub source: Option<String>,
 }

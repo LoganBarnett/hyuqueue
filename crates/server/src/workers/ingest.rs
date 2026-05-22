@@ -1,19 +1,31 @@
 //! Ingest worker — polls registered topics for new items.
 //!
 //! Iterates the topic registry on a fixed interval, calling each
-//! topic's `ingest()` method. Returned `IngestItem` values are
-//! persisted: first an `ItemCreated` event is appended, then the
-//! `items` projection is updated.
+//! topic's `ingest()` method.  Each returned `IngestItem` is
+//! persisted in three steps:
+//!
+//! 1. Append an `ItemCreated` event (events are the source of truth).
+//! 2. Insert the item projection.
+//! 3. Enqueue the item id into the `intake` queue so the intake
+//!    worker picks it up.
+//!
+//! Topics are polled concurrently (one topic's slow integration
+//! doesn't block another), and per-topic items persist concurrently
+//! (SQLite serializes writes at the connection level, so this is
+//! more about expressing independence than throughput).
 
-use crate::topics::TopicRegistry;
+use crate::topics::{TopicEntry, TopicRegistry};
+use futures::future::join_all;
 use hyuqueue_core::{
   event::{Actor, EventType, Locality},
-  item::{Item, ItemState},
-  topic::TopicCtx,
+  item::Item,
+  queue as queue_names,
+  topic::{IngestItem, TopicCtx},
 };
-use hyuqueue_store::{events, items, Db};
+use hyuqueue_store::{events, items, queue, Db};
 use serde_json::json;
 use std::sync::Arc;
+use tap::TapFallible;
 use tokio::time::{sleep, Duration};
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -22,7 +34,6 @@ const POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 pub async fn run(db: Db, registry: Arc<TopicRegistry>) {
   info!("Ingest worker started");
-
   loop {
     process_all(&db, &registry).await;
     sleep(POLL_INTERVAL).await;
@@ -30,80 +41,124 @@ pub async fn run(db: Db, registry: Arc<TopicRegistry>) {
 }
 
 async fn process_all(db: &Db, registry: &TopicRegistry) {
-  // Stub context for in-process topic calls.  Subprocess topics
-  // (M3) will surface their own notifications via stdout instead of
-  // through this ctx, so the no-op is fine here.
   let ctx = TopicCtx::stub();
-  for (topic_id, entry) in registry.entries() {
-    let ingest_items = match entry.topic.ingest(&ctx, &entry.config).await {
-      Ok(items) => items,
-      Err(e) => {
-        warn!(
-          topic = %topic_id,
-          "Ingest failed: {e}"
-        );
-        continue;
-      }
-    };
+  join_all(
+    registry
+      .entries()
+      .iter()
+      .map(|(topic_id, entry)| ingest_one_topic(db, topic_id, entry, &ctx)),
+  )
+  .await;
+}
 
-    if ingest_items.is_empty() {
-      continue;
-    }
+async fn ingest_one_topic(
+  db: &Db,
+  topic_id: &str,
+  entry: &TopicEntry,
+  ctx: &TopicCtx,
+) {
+  let Some(items) = entry
+    .topic
+    .ingest(ctx, &entry.config)
+    .await
+    .tap_err(|e| warn!(topic = %topic_id, "Ingest failed: {e}"))
+    .ok()
+    .filter(|items| !items.is_empty())
+  else {
+    return;
+  };
 
-    info!(
-      topic = %topic_id,
-      count = ingest_items.len(),
-      "Ingested items from topic"
-    );
+  info!(
+    topic = %topic_id,
+    count = items.len(),
+    "Ingested items from topic"
+  );
 
-    for ingest_item in ingest_items {
-      let item_id = Uuid::new_v4();
+  join_all(
+    items
+      .into_iter()
+      .map(|ingest_item| persist_item(db, topic_id, ingest_item)),
+  )
+  .await;
+}
 
-      // Event first — events are the source of truth.
-      let event = events::new_item_event(
-        item_id,
-        EventType::ItemCreated,
-        Actor::Topic(topic_id.clone()),
-        Locality::Local,
-        json!({
-          "source": ingest_item.source,
-          "metadata": ingest_item.metadata,
-        }),
-      );
-
-      if let Err(e) = events::append(db, &event).await {
-        error!(
-          topic = %topic_id,
-          item_id = %item_id,
-          "Failed to append ItemCreated event: {e}"
-        );
-        continue;
-      }
-
-      // Then update the items projection.
-      let item = Item {
-        id: item_id,
-        queue_id: entry.queue_id,
-        title: ingest_item.title,
-        body: ingest_item.body,
-        source_topic_id: Some(topic_id.clone()),
-        source: ingest_item.source,
-        delegate_from: None,
-        delegate_chain: vec![],
-        capabilities: vec![],
-        metadata: ingest_item.metadata.clone(),
-        state: ItemState::IntakePending,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-      };
-
-      if let Err(e) = items::insert(db, &item).await {
-        error!(
-          topic = %topic_id,
-          item_id = %item_id,
-          "Failed to insert ingested item: {e}"
-        );
-      }
-    }
+async fn persist_item(db: &Db, topic_id: &str, ingest_item: IngestItem) {
+  let item_id = Uuid::new_v4();
+  if let Err(e) = persist_item_inner(db, topic_id, item_id, ingest_item).await {
+    error!(topic = %topic_id, item_id = %item_id, "Failed to persist: {e}");
   }
+}
+
+async fn persist_item_inner(
+  db: &Db,
+  topic_id: &str,
+  item_id: Uuid,
+  ingest_item: IngestItem,
+) -> Result<(), String> {
+  let item = Item {
+    id: item_id,
+    title: ingest_item.title,
+    body: ingest_item.body,
+    source_topic_id: Some(topic_id.to_string()),
+    source: ingest_item.source.clone(),
+    delegate_from: None,
+    delegate_chain: vec![],
+    capabilities: vec![],
+    metadata: ingest_item.metadata.clone(),
+    created_at: chrono::Utc::now(),
+    updated_at: chrono::Utc::now(),
+  };
+
+  // All four writes (creation event, item insert, queue enqueue,
+  // enqueue audit event) must succeed atomically — otherwise the
+  // intake worker could see a queued item with no projection, or
+  // the audit trail could miss an event for an item that exists.
+  let mut tx = db
+    .pool()
+    .begin()
+    .await
+    .map_err(|e| format!("begin tx: {e}"))?;
+
+  events::append(
+    &mut *tx,
+    &events::new_item_event(
+      item_id,
+      EventType::ItemCreated,
+      Actor::Topic(topic_id.to_string()),
+      Locality::Local,
+      json!({
+        "source": ingest_item.source,
+        "metadata": ingest_item.metadata,
+      }),
+    ),
+  )
+  .await
+  .map_err(|e| format!("ItemCreated event append: {e}"))?;
+
+  items::insert(&mut *tx, &item)
+    .await
+    .map_err(|e| format!("item insert: {e}"))?;
+
+  queue::enqueue(&mut *tx, queue_names::INTAKE, item_id, 0)
+    .await
+    .map_err(|e| format!("enqueue to intake: {e}"))?;
+
+  events::append(
+    &mut *tx,
+    &events::new_event(
+      EventType::ItemEnqueued,
+      Actor::System,
+      Locality::Local,
+      json!({
+        "item_id": item_id,
+        "queue": queue_names::INTAKE,
+        "priority": 0,
+      }),
+    ),
+  )
+  .await
+  .map_err(|e| format!("ItemEnqueued event append: {e}"))?;
+
+  tx.commit().await.map_err(|e| format!("commit: {e}"))?;
+  Ok(())
 }

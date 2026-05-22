@@ -1345,6 +1345,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "futures",
  "home",
  "hyuqueue-core",
  "hyuqueue-lib",

@@ -93,7 +93,6 @@ pub struct CliRaw {
 #[derive(Debug, Deserialize)]
 pub struct TopicConfigRaw {
   pub id: String,
-  pub queue: String,
   /// argv for the topic subprocess.  First element is the binary
   /// path; remaining elements are passed as args.  Every topic is a
   /// subprocess — see crates/topic-host and crates/topic-sdk.
@@ -157,7 +156,6 @@ pub struct OidcConfig {
 #[derive(Debug, Clone)]
 pub struct TopicConfig {
   pub id: String,
-  pub queue_name: String,
   pub command: Vec<String>,
   pub config: serde_json::Value,
 }
@@ -417,7 +415,6 @@ fn resolve_topics(
       }
       Ok(TopicConfig {
         id: t.id,
-        queue_name: t.queue,
         command: t.command,
         config: json_config,
       })

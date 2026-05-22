@@ -30,11 +30,7 @@ enum ApplicationError {
 }
 
 #[derive(Debug, Parser)]
-#[command(
-  name = "hyuqueue",
-  about = "hyuqueue — human work queue",
-  version
-)]
+#[command(name = "hyuqueue", about = "hyuqueue — human work queue", version)]
 struct Cli {
   #[arg(long, env = "LOG_LEVEL", global = true)]
   log_level: Option<String>,
@@ -55,12 +51,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-  /// List items in the human queue.
+  /// List items, optionally filtered by source.
   List {
+    /// Optional source filter (e.g. --source email).
     #[arg(long)]
-    queue_id: Option<Uuid>,
-    #[arg(long)]
-    state: Option<String>,
+    source: Option<String>,
     #[arg(long, default_value = "50")]
     limit: i64,
   },
@@ -72,11 +67,10 @@ enum Commands {
   Add {
     #[arg(long)]
     title: String,
-    /// Origin system identifier (e.g. "email", "jira", "slack"). Required.
+    /// Origin system identifier (e.g. "email", "jira", "slack").
+    /// Required.
     #[arg(long)]
     source: String,
-    #[arg(long)]
-    queue_id: Uuid,
     #[arg(long)]
     body: Option<String>,
     /// JSON metadata blob.
@@ -93,7 +87,8 @@ enum Commands {
     params: Option<String>,
   },
 
-  /// Ack an item — marks it done and (in iron mode) advances the queue.
+  /// Ack an item — the human's halt signal.  Removes the item from
+  /// the human queue and enqueues it for outtake processing.
   Ack { id: Uuid },
 
   /// Show the next item in the human queue (iron mode).
@@ -101,25 +96,6 @@ enum Commands {
 
   /// Show the count of items in the human queue.
   Count,
-
-  /// Queue management.
-  Queue {
-    #[command(subcommand)]
-    cmd: QueueCommands,
-  },
-}
-
-#[derive(Debug, Subcommand)]
-enum QueueCommands {
-  /// List all queues.
-  List,
-  /// Create a new queue.
-  Add {
-    #[arg(long)]
-    name: String,
-    #[arg(long, value_delimiter = ',')]
-    tags: Vec<String>,
-  },
 }
 
 #[tokio::main]
@@ -133,14 +109,10 @@ async fn main() -> Result<(), ApplicationError> {
     config.server_url = url;
   }
   if let Some(level) = cli.log_level {
-    config.log_level = level
-      .parse()
-      .unwrap_or(hyuqueue_lib::LogLevel::Info);
+    config.log_level = level.parse().unwrap_or(hyuqueue_lib::LogLevel::Info);
   }
   if let Some(fmt) = cli.log_format {
-    config.log_format = fmt
-      .parse()
-      .unwrap_or(hyuqueue_lib::LogFormat::Text);
+    config.log_format = fmt.parse().unwrap_or(hyuqueue_lib::LogFormat::Text);
   }
 
   init_logging(config.log_level, config.log_format);
@@ -149,17 +121,10 @@ async fn main() -> Result<(), ApplicationError> {
   let base = config.server_url.trim_end_matches('/').to_string();
 
   let result = match cli.command {
-    Commands::List {
-      queue_id,
-      state,
-      limit,
-    } => {
+    Commands::List { source, limit } => {
       let mut url = format!("{base}/api/v1/items?limit={limit}");
-      if let Some(qid) = queue_id {
-        url.push_str(&format!("&queue_id={qid}"));
-      }
-      if let Some(s) = state {
-        url.push_str(&format!("&state={s}"));
+      if let Some(s) = source {
+        url.push_str(&format!("&source={s}"));
       }
       http.get(&url).send().await?.text().await?
     }
@@ -176,7 +141,6 @@ async fn main() -> Result<(), ApplicationError> {
     Commands::Add {
       title,
       source,
-      queue_id,
       body,
       meta,
     } => {
@@ -188,7 +152,6 @@ async fn main() -> Result<(), ApplicationError> {
       let body_json = serde_json::json!({
         "title": title,
         "source": source,
-        "queue_id": queue_id,
         "body": body,
         "metadata": metadata,
       });
@@ -250,27 +213,6 @@ async fn main() -> Result<(), ApplicationError> {
         .text()
         .await?
     }
-
-    Commands::Queue { cmd } => match cmd {
-      QueueCommands::List => {
-        http
-          .get(format!("{base}/api/v1/queues"))
-          .send()
-          .await?
-          .text()
-          .await?
-      }
-      QueueCommands::Add { name, tags } => {
-        let body_json = serde_json::json!({ "name": name, "tags": tags });
-        http
-          .post(format!("{base}/api/v1/queues"))
-          .json(&body_json)
-          .send()
-          .await?
-          .text()
-          .await?
-      }
-    },
   };
 
   // Output to stdout — ready for piping and JSON parsing.

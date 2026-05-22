@@ -10,7 +10,7 @@
 pub mod db;
 pub mod events;
 pub mod items;
-pub mod queues;
+pub mod queue;
 pub mod signals;
 pub mod topic_data;
 

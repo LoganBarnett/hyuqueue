@@ -1,10 +1,10 @@
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use hyuqueue_core::{
   event::{Actor, EventType, Locality},
-  item::{Item, ItemState},
-  queue::Queue,
+  item::Item,
+  queue as queue_names,
 };
-use hyuqueue_store::{events, items, queues, Db};
+use hyuqueue_store::{events, items, queue, Db};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -12,101 +12,40 @@ async fn test_db() -> Db {
   Db::open(":memory:").await.unwrap()
 }
 
-fn test_queue() -> Queue {
-  let now = Utc::now();
-  Queue {
-    id: Uuid::new_v4(),
-    name: "test-queue".to_string(),
-    tags: vec!["test".to_string()],
-    config: json!({}),
-    created_at: now,
-    updated_at: now,
-  }
-}
-
-fn test_item(queue_id: Uuid) -> Item {
+fn test_item(source: &str) -> Item {
   let now = Utc::now();
   Item {
     id: Uuid::new_v4(),
-    queue_id,
-    title: "Test item".to_string(),
+    title: format!("Test item ({source})"),
     body: Some("Test body".to_string()),
     source_topic_id: None,
-    source: "test".to_string(),
+    source: source.to_string(),
     delegate_from: None,
     delegate_chain: vec![],
     capabilities: vec![],
     metadata: json!({}),
-    state: ItemState::IntakePending,
     created_at: now,
     updated_at: now,
   }
 }
 
 #[tokio::test]
-async fn test_queue_crud() {
+async fn item_insert_and_get() {
   let db = test_db().await;
-  let queue = test_queue();
+  let item = test_item("test");
+  items::insert(db.pool(), &item).await.unwrap();
 
-  queues::insert(&db, &queue).await.unwrap();
-
-  let all = queues::list(&db).await.unwrap();
-  assert_eq!(all.len(), 1);
-  assert_eq!(all[0].name, "test-queue");
+  let fetched = items::get(db.pool(), item.id).await.unwrap();
+  assert_eq!(fetched.title, item.title);
+  assert_eq!(fetched.source, "test");
 }
 
 #[tokio::test]
-async fn test_item_lifecycle() {
+async fn event_append_and_query() {
   let db = test_db().await;
-  let queue = test_queue();
-  queues::insert(&db, &queue).await.unwrap();
+  let item = test_item("test");
+  items::insert(db.pool(), &item).await.unwrap();
 
-  let item = test_item(queue.id);
-  items::insert(&db, &item).await.unwrap();
-
-  // Verify item exists.
-  let fetched = items::get(&db, item.id).await.unwrap();
-  assert_eq!(fetched.title, "Test item");
-  assert_eq!(fetched.state, ItemState::IntakePending);
-
-  // Transition to HumanPending.
-  items::update_state(&db, item.id, ItemState::HumanPending)
-    .await
-    .unwrap();
-  let fetched = items::get(&db, item.id).await.unwrap();
-  assert_eq!(fetched.state, ItemState::HumanPending);
-
-  // Should appear as next item.
-  let next = items::next_human_item(&db).await.unwrap();
-  assert!(next.is_some());
-  assert_eq!(next.unwrap().id, item.id);
-
-  // Count should be 1.
-  let count = items::human_queue_count(&db).await.unwrap();
-  assert_eq!(count, 1);
-
-  // Ack (transition to Done).
-  items::update_state(&db, item.id, ItemState::Done)
-    .await
-    .unwrap();
-  let fetched = items::get(&db, item.id).await.unwrap();
-  assert_eq!(fetched.state, ItemState::Done);
-
-  // Queue should be empty now.
-  let next = items::next_human_item(&db).await.unwrap();
-  assert!(next.is_none());
-}
-
-#[tokio::test]
-async fn test_event_append_and_query() {
-  let db = test_db().await;
-  let queue = test_queue();
-  queues::insert(&db, &queue).await.unwrap();
-
-  let item = test_item(queue.id);
-  items::insert(&db, &item).await.unwrap();
-
-  // Append an event.
   let event = events::new_item_event(
     item.id,
     EventType::ItemCreated,
@@ -114,40 +53,104 @@ async fn test_event_append_and_query() {
     Locality::Local,
     json!({ "source": "test" }),
   );
-  events::append(&db, &event).await.unwrap();
+  events::append(db.pool(), &event).await.unwrap();
 
-  // Query events for item (returns JSON values, not typed events).
-  let item_events = events::for_item(&db, item.id).await.unwrap();
+  let item_events = events::for_item(db.pool(), item.id).await.unwrap();
   assert_eq!(item_events.len(), 1);
 }
 
 #[tokio::test]
-async fn test_item_list_filtering() {
+async fn item_list_with_source_filter() {
   let db = test_db().await;
-  let queue = test_queue();
-  queues::insert(&db, &queue).await.unwrap();
+  let email_item = test_item("email");
+  let jira_item = test_item("jira");
+  items::insert(db.pool(), &email_item).await.unwrap();
+  items::insert(db.pool(), &jira_item).await.unwrap();
 
-  // Create items in different states.
-  let item1 = test_item(queue.id);
-  items::insert(&db, &item1).await.unwrap();
-
-  let item2 = test_item(queue.id);
-  items::insert(&db, &item2).await.unwrap();
-  items::update_state(&db, item2.id, ItemState::HumanPending)
-    .await
-    .unwrap();
-
-  // List all.
-  let all = items::list(&db, None, None, 50, 0).await.unwrap();
+  let all = items::list(db.pool(), None, 50, 0).await.unwrap();
   assert_eq!(all.len(), 2);
 
-  // Filter by state.
-  let pending = items::list(&db, None, Some(ItemState::IntakePending), 50, 0)
+  let just_email = items::list(db.pool(), Some("email"), 50, 0).await.unwrap();
+  assert_eq!(just_email.len(), 1);
+  assert_eq!(just_email[0].id, email_item.id);
+}
+
+#[tokio::test]
+async fn item_lifecycle_via_queue_transitions() {
+  let db = test_db().await;
+  let item = test_item("test");
+  items::insert(db.pool(), &item).await.unwrap();
+
+  // Items flow through the system via queue transitions.  Start on
+  // the intake queue, get picked up by intake-worker, escalate to
+  // human, get acked into outtake, and finally complete.
+  queue::enqueue(db.pool(), queue_names::INTAKE, item.id, 0)
     .await
     .unwrap();
-  assert_eq!(pending.len(), 1);
+  assert_eq!(queue::depth(db.pool(), queue_names::INTAKE).await.unwrap(), 1);
 
-  // Filter by queue.
-  let by_queue = items::list(&db, Some(queue.id), None, 50, 0).await.unwrap();
-  assert_eq!(by_queue.len(), 2);
+  let intake_worker = "intake-test";
+  let entry = queue::dequeue_one(
+    &db,
+    queue_names::INTAKE,
+    intake_worker,
+    Duration::seconds(30),
+  )
+  .await
+  .unwrap()
+  .expect("expected an item");
+  assert_eq!(entry.item_id, item.id);
+
+  // Intake escalates to human.
+  queue::move_item_one(
+    &db,
+    item.id,
+    queue_names::INTAKE,
+    queue_names::HUMAN,
+    intake_worker,
+  )
+  .await
+  .unwrap();
+  assert_eq!(queue::depth(db.pool(), queue_names::INTAKE).await.unwrap(), 0);
+  assert_eq!(queue::depth(db.pool(), queue_names::HUMAN).await.unwrap(), 1);
+
+  // Human "worker" (the operator's client) takes it, then acks by
+  // moving to outtake.
+  let human_worker = "human-client";
+  let _ = queue::dequeue_one(
+    &db,
+    queue_names::HUMAN,
+    human_worker,
+    Duration::minutes(5),
+  )
+  .await
+  .unwrap()
+  .expect("human picks up the item");
+  queue::move_item_one(
+    &db,
+    item.id,
+    queue_names::HUMAN,
+    queue_names::OUTTAKE,
+    human_worker,
+  )
+  .await
+  .unwrap();
+
+  // Outtake worker processes and completes.
+  let outtake_worker = "outtake-test";
+  let _ = queue::dequeue_one(
+    &db,
+    queue_names::OUTTAKE,
+    outtake_worker,
+    Duration::minutes(5),
+  )
+  .await
+  .unwrap()
+  .expect("outtake picks up the item");
+  queue::complete(db.pool(), queue_names::OUTTAKE, item.id, outtake_worker)
+    .await
+    .unwrap();
+
+  // All queues are empty.
+  assert_eq!(queue::depth(db.pool(), queue_names::OUTTAKE).await.unwrap(), 0);
 }

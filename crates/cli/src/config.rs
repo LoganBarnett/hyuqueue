@@ -5,9 +5,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
-  #[error(
-    "Failed to read config file at {path:?}: {source}"
-  )]
+  #[error("Failed to read config file at {path:?}: {source}")]
   FileRead {
     path: PathBuf,
     #[source]
@@ -34,11 +32,12 @@ pub struct ConfigFileRaw {
 
 impl ConfigFileRaw {
   pub fn from_file(path: &PathBuf) -> Result<Self, ConfigError> {
-    let contents =
-      std::fs::read_to_string(path).map_err(|source| ConfigError::FileRead {
+    let contents = std::fs::read_to_string(path).map_err(|source| {
+      ConfigError::FileRead {
         path: path.clone(),
         source,
-      })?;
+      }
+    })?;
     toml::from_str(&contents).map_err(|source| ConfigError::Parse {
       path: path.clone(),
       source,
@@ -55,7 +54,9 @@ pub struct Config {
 }
 
 impl Config {
-  pub fn from_file_or_default(config_path: Option<PathBuf>) -> Result<Self, ConfigError> {
+  pub fn from_file_or_default(
+    config_path: Option<PathBuf>,
+  ) -> Result<Self, ConfigError> {
     let file = if let Some(path) = config_path {
       ConfigFileRaw::from_file(&path)?
     } else {

@@ -38,7 +38,7 @@ impl TopicDataSink for DbBackedSink {
         "value": value,
       }),
     );
-    if let Err(e) = events::append(&self.db, &event).await {
+    if let Err(e) = events::append(self.db.pool(), &event).await {
       warn!(
         topic = %topic_id,
         key = %key,

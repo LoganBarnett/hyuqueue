@@ -5,22 +5,14 @@
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
--- ── Queues ────────────────────────────────────────────────────────────────────
-
-CREATE TABLE IF NOT EXISTS queues (
-  id         TEXT PRIMARY KEY,
-  name       TEXT NOT NULL UNIQUE,
-  tags       TEXT NOT NULL DEFAULT '[]',  -- JSON string[]
-  config     TEXT NOT NULL DEFAULT '{}',  -- JSON
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
 -- ── Items (projection) ────────────────────────────────────────────────────────
+-- An item is just identity + content + provenance.  Where it is in the
+-- system (intake-pending, awaiting-human, etc.) is determined by queue
+-- membership — see queue_items below.  There is no `state` enum and no
+-- `queue_id`; queues are FIFO containers, not named buckets.
 
 CREATE TABLE IF NOT EXISTS items (
   id               TEXT PRIMARY KEY,
-  queue_id         TEXT NOT NULL REFERENCES queues(id),
   title            TEXT NOT NULL,
   body             TEXT,
   source_topic_id  TEXT,
@@ -34,14 +26,34 @@ CREATE TABLE IF NOT EXISTS items (
   capabilities     TEXT NOT NULL DEFAULT '[]',
   -- JSON: arbitrary source-specific data
   metadata         TEXT NOT NULL DEFAULT '{}',
-  state            TEXT NOT NULL DEFAULT 'intake_pending',
   created_at       TEXT NOT NULL,
   updated_at       TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_items_queue_id ON items(queue_id);
-CREATE INDEX IF NOT EXISTS idx_items_state    ON items(state);
-CREATE INDEX IF NOT EXISTS idx_items_source   ON items(source);
+CREATE INDEX IF NOT EXISTS idx_items_source ON items(source);
+
+-- ── Queue membership ──────────────────────────────────────────────────────────
+-- Reserved system queue names: "intake", "human", "outtake", "errors".
+-- The queue_name column is a free-form string; the application enforces
+-- which names are valid.  Items live in zero or more queues; queue
+-- membership is what determines where an item is in the system.
+
+CREATE TABLE IF NOT EXISTS queue_items (
+  queue_name       TEXT NOT NULL,
+  item_id          TEXT NOT NULL REFERENCES items(id),
+  -- Higher priority dequeues first; FIFO within a priority bucket.
+  priority         INTEGER NOT NULL DEFAULT 0,
+  enqueued_at      TEXT NOT NULL,
+  -- Worker that currently holds the lease (NULL when available).
+  claimed_by       TEXT,
+  claimed_at       TEXT,
+  -- Item becomes available again to other workers when this passes.
+  lease_expires_at TEXT,
+  PRIMARY KEY (queue_name, item_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_queue_items_dispatch
+  ON queue_items (queue_name, priority DESC, enqueued_at);
 
 -- ── Events (source of truth) ─────────────────────────────────────────────────
 

@@ -8,15 +8,23 @@ use axum::{
   routing::{get, post},
   Json, Router,
 };
-use chrono::Utc;
+use chrono::{Duration as ChronoDuration, Utc};
 use hyuqueue_core::{
   event::{Actor, EventType, Locality},
-  item::{Item, ItemState},
+  item::Item,
+  queue as queue_names,
 };
-use hyuqueue_store::{events, items};
+use hyuqueue_store::{events, items, queue};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
+
+/// Worker id used by the API's own queue interactions.  HTTP requests
+/// are per-process actions; a fresh worker id per call keeps queue
+/// ops simple without tracking per-session state.
+fn api_worker_id() -> String {
+  format!("api-{}", Uuid::new_v4())
+}
 
 pub fn router() -> Router<AppState> {
   Router::new()
@@ -32,8 +40,8 @@ pub fn router() -> Router<AppState> {
 
 #[derive(Debug, Deserialize)]
 pub struct ListParams {
-  pub queue_id: Option<Uuid>,
-  pub state: Option<String>,
+  /// Optional source filter (e.g. ?source=email).
+  pub source: Option<String>,
   #[serde(default = "default_limit")]
   pub limit: i64,
   #[serde(default)]
@@ -48,12 +56,9 @@ async fn list_items(
   State(state): State<AppState>,
   Query(params): Query<ListParams>,
 ) -> impl IntoResponse {
-  let item_state = params.state.as_deref().map(parse_state);
-
   match items::list(
-    &state.db,
-    params.queue_id,
-    item_state,
+    state.db.pool(),
+    params.source.as_deref(),
     params.limit,
     params.offset,
   )
@@ -76,7 +81,6 @@ pub struct CreateItemRequest {
   pub body: Option<String>,
   pub source: String,
   pub source_topic_id: Option<String>,
-  pub queue_id: Uuid,
   #[serde(default)]
   pub metadata: serde_json::Value,
 }
@@ -88,7 +92,6 @@ async fn create_item(
   let now = Utc::now();
   let item = Item {
     id: Uuid::new_v4(),
-    queue_id: req.queue_id,
     title: req.title,
     body: req.body,
     source_topic_id: req.source_topic_id,
@@ -97,31 +100,46 @@ async fn create_item(
     delegate_chain: vec![],
     capabilities: vec![],
     metadata: req.metadata,
-    state: ItemState::IntakePending,
     created_at: now,
     updated_at: now,
   };
 
-  match items::insert(&state.db, &item).await {
+  // Item creation is a three-step persist (event, insert, enqueue)
+  // that must succeed atomically.  Compose in one transaction.
+  match create_item_tx(&state, &item).await {
     Ok(()) => {
-      // Append ItemCreated event.
-      let event = events::new_item_event(
-        item.id,
-        EventType::ItemCreated,
-        Actor::System,
-        Locality::Local,
-        json!({ "source": item.source }),
-      );
-      let _ = events::append(&state.db, &event).await;
-
       (StatusCode::CREATED, Json(json!({ "item": item }))).into_response()
     }
-    Err(e) => (
-      StatusCode::INTERNAL_SERVER_ERROR,
-      Json(json!({ "error": e.to_string() })),
-    )
+    Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e })))
       .into_response(),
   }
+}
+
+async fn create_item_tx(state: &AppState, item: &Item) -> Result<(), String> {
+  let mut tx = state
+    .db
+    .pool()
+    .begin()
+    .await
+    .map_err(|e| format!("begin tx: {e}"))?;
+  let event = events::new_item_event(
+    item.id,
+    EventType::ItemCreated,
+    Actor::System,
+    Locality::Local,
+    json!({ "source": item.source }),
+  );
+  events::append(&mut *tx, &event)
+    .await
+    .map_err(|e| format!("event append: {e}"))?;
+  items::insert(&mut *tx, item)
+    .await
+    .map_err(|e| format!("item insert: {e}"))?;
+  queue::enqueue(&mut *tx, queue_names::INTAKE, item.id, 0)
+    .await
+    .map_err(|e| format!("enqueue: {e}"))?;
+  tx.commit().await.map_err(|e| format!("commit: {e}"))?;
+  Ok(())
 }
 
 // ── Get ───────────────────────────────────────────────────────────────────────
@@ -130,10 +148,11 @@ async fn get_item(
   State(state): State<AppState>,
   Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-  match items::get(&state.db, id).await {
+  match items::get(state.db.pool(), id).await {
     Ok(item) => {
-      // Include the event log in the response.
-      let event_log = events::for_item(&state.db, id).await.unwrap_or_default();
+      let event_log = events::for_item(state.db.pool(), id)
+        .await
+        .unwrap_or_default();
       Json(json!({ "item": item, "events": event_log })).into_response()
     }
     Err(items::ItemsError::NotFound(_)) => {
@@ -162,9 +181,6 @@ async fn invoke_action(
   Path(id): Path<Uuid>,
   Json(req): Json<ActionRequest>,
 ) -> impl IntoResponse {
-  // Record the action as an event. Actual execution is delegated to the
-  // topic system (not yet wired in the server — topics are registered at
-  // startup and called from worker tasks or directly here).
   let event = events::new_item_event(
     id,
     EventType::ActionTaken,
@@ -176,7 +192,7 @@ async fn invoke_action(
     }),
   );
 
-  match events::append(&state.db, &event).await {
+  match events::append(state.db.pool(), &event).await {
     Ok(()) => Json(json!({ "event_id": event.id })).into_response(),
     Err(e) => (
       StatusCode::INTERNAL_SERVER_ERROR,
@@ -187,13 +203,48 @@ async fn invoke_action(
 }
 
 // ── Ack ───────────────────────────────────────────────────────────────────────
-// Ack is the iron-mode gate: only this advances the queue to the next item.
+// Ack is the human's halt signal.  At the queue layer it claims the
+// item from the human queue, appends the ack event, and moves the
+// item to the outtake queue — all three in a single transaction so
+// the ack either fully happens or doesn't happen at all.
 
 async fn ack_item(
   State(state): State<AppState>,
   Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-  // Append the ack event.
+  let worker_id = api_worker_id();
+  let lease = ChronoDuration::seconds(30);
+
+  match ack_item_tx(&state, id, &worker_id, lease).await {
+    Ok(()) => Json(json!({ "status": "done" })).into_response(),
+    Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e })))
+      .into_response(),
+  }
+}
+
+async fn ack_item_tx(
+  state: &AppState,
+  id: Uuid,
+  worker_id: &str,
+  lease: ChronoDuration,
+) -> Result<(), String> {
+  let mut tx = state
+    .db
+    .pool()
+    .begin()
+    .await
+    .map_err(|e| format!("begin tx: {e}"))?;
+
+  // HTTP API is stateless — each request generates a fresh worker
+  // id, so we can't honor a prior lease.  force_claim bypasses
+  // lease coordination; the HTTP path is implicitly authoritative
+  // for the local operator.  TUI/Emacs clients with persistent
+  // worker ids should hold a real lease and use the worker-id-
+  // respecting API instead.
+  queue::force_claim(&mut *tx, queue_names::HUMAN, id, worker_id, lease)
+    .await
+    .map_err(|e| format!("force_claim: {e}"))?;
+
   let event = events::new_item_event(
     id,
     EventType::ActionTaken,
@@ -201,32 +252,60 @@ async fn ack_item(
     Locality::Local,
     json!({ "activity_id": "ack" }),
   );
-  let _ = events::append(&state.db, &event).await;
+  events::append(&mut *tx, &event)
+    .await
+    .map_err(|e| format!("event append: {e}"))?;
 
-  // Update item projection to Done.
-  match items::update_state(&state.db, id, ItemState::Done).await {
-    Ok(()) => Json(json!({ "status": "done" })).into_response(),
-    Err(e) => (
-      StatusCode::INTERNAL_SERVER_ERROR,
-      Json(json!({ "error": e.to_string() })),
-    )
-      .into_response(),
-  }
+  queue::move_item(
+    &mut tx,
+    id,
+    queue_names::HUMAN,
+    queue_names::OUTTAKE,
+    worker_id,
+  )
+  .await
+  .map_err(|e| format!("queue move: {e}"))?;
+
+  tx.commit().await.map_err(|e| format!("commit: {e}"))?;
+  Ok(())
 }
 
 // ── Next item (iron mode) ─────────────────────────────────────────────────────
+// Returns the head of the human queue without claiming it (the
+// caller, typically the TUI, displays it; a separate ack call takes
+// the lease and completes it).
 
 async fn next_item(State(state): State<AppState>) -> impl IntoResponse {
-  match items::next_human_item(&state.db).await {
-    Ok(Some(item)) => Json(json!({ "item": item })).into_response(),
-    Ok(None) => {
+  let entries =
+    match queue::list(state.db.pool(), queue_names::HUMAN, &Default::default())
+      .await
+    {
+      Ok(es) => es,
+      Err(e) => {
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          Json(json!({ "error": e.to_string() })),
+        )
+          .into_response();
+      }
+    };
+
+  let next = entries.into_iter().find(|e| {
+    e.claimed_by.is_none() || e.lease_expires_at.is_some_and(|t| t < Utc::now())
+  });
+
+  match next {
+    None => {
       Json(json!({ "item": null, "message": "queue is empty" })).into_response()
     }
-    Err(e) => (
-      StatusCode::INTERNAL_SERVER_ERROR,
-      Json(json!({ "error": e.to_string() })),
-    )
-      .into_response(),
+    Some(entry) => match items::get(state.db.pool(), entry.item_id).await {
+      Ok(item) => Json(json!({ "item": item })).into_response(),
+      Err(e) => (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({ "error": e.to_string() })),
+      )
+        .into_response(),
+    },
   }
 }
 
@@ -238,22 +317,12 @@ struct CountResponse {
 }
 
 async fn queue_count(State(state): State<AppState>) -> impl IntoResponse {
-  match items::human_queue_count(&state.db).await {
+  match queue::depth(state.db.pool(), queue_names::HUMAN).await {
     Ok(count) => Json(CountResponse { count }).into_response(),
     Err(e) => (
       StatusCode::INTERNAL_SERVER_ERROR,
       Json(json!({ "error": e.to_string() })),
     )
       .into_response(),
-  }
-}
-
-fn parse_state(s: &str) -> ItemState {
-  match s {
-    "intake_pending" => ItemState::IntakePending,
-    "human_pending" => ItemState::HumanPending,
-    "auto_handled" => ItemState::AutoHandled,
-    "done" => ItemState::Done,
-    _ => ItemState::HumanPending,
   }
 }
