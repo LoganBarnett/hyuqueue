@@ -655,6 +655,65 @@ Treating these separately keeps the design clean.  Conflating them
 into a "topic context" blob mixes "available tools" with "guidance
 about how to use them" and that's harder to reason about.
 
+* TODO Make LLM communication configurable
+
+Today the LLM client, model, tool-call protocol shape, transcript
+encoding, system prompts, halt-tool names, turn budgets, and
+related communication details are baked in at various call sites.
+Eventually all of this should be configurable, with intelligent
+defaults so the out-of-box experience stays simple.
+
+No prescription yet on /how/ — could be a single ~llm.toml~,
+per-role sections in the main config, a Rust trait with pluggable
+implementations, or some mix.  Decide when picking this up; the
+intake and outtake loops will have shaken out enough of the actual
+surface to make the right shape obvious.
+
+** Why not now
+
+The communication shape is still in flux.  Locking in a config
+schema before the intake+outtake loops have run against real
+topics would either freeze decisions prematurely or require
+breaking the schema once we learn what actually needs to be tuned.
+
+** When to pick this up
+
+After both intake and outtake loops have been driving real items
+for long enough that the parameters worth exposing are obvious
+(model choice per role, turn budgets, halt-tool naming, prompt
+overrides, endpoint URLs for non-Ollama backends, etc.).
+
+** Single-module pattern for templated strings
+
+When we encode the in-code defaults (system prompts, halt-tool
+descriptions, transcript framing, error-feedback messages, etc.),
+gather them into one module — e.g. ~crates/server/src/llm/prompts.rs~
+— where every templated string either lives directly or is
+re-exported from.  Goal: one place to grep for "what do we say to
+the LLM," easy to audit during code review, easy to migrate
+wholesale when configurability lands.
+
+Constraint: ~format!~/~println!~ require a string literal at the
+call site (the proc macro parses ~{name}~ captures and type-checks
+against scope), so plain ~const~ strings lose type safety.  The
+viable encoding is ~macro_rules!~ declaring each template:
+
+#+begin_src rust :exports code
+macro_rules! intake_system_prompt {
+  () => { "You are the intake LLM.  Item: {item_title}..." };
+}
+// At call site:
+let prompt = format!(intake_system_prompt!());
+#+end_src
+
+Expansion produces a literal, capture and type-check survive.  The
+ergonomics are uglier than a bare const but the catalog property is
+intact, and the macros can all live in one module.
+
+Not worth doing piecemeal during active development — upkeep will
+slip and the catalog will quietly become partial.  Land it as part
+of the configurability work, when there's a single coherent pass.
+
 * TODO Rename ~policy~ → ~instruction~ across the codebase
 
 "Policy" is loaded in software (permissions, access control,
