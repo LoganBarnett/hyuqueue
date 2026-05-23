@@ -34,6 +34,14 @@ impl TopicRegistry {
   pub fn entries(&self) -> &HashMap<String, TopicEntry> {
     &self.entries
   }
+
+  /// Build a registry from a prepared entry map.  Test-only path —
+  /// production code builds via [`build_registry`] which spawns
+  /// subprocesses.  Tests use this to plug in `impl Topic` stubs
+  /// without crossing the subprocess boundary.
+  pub fn from_entries_for_test(entries: HashMap<String, TopicEntry>) -> Self {
+    Self { entries }
+  }
 }
 
 /// Spawn a subprocess for each configured topic and build the

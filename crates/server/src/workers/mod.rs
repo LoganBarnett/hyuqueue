@@ -8,6 +8,7 @@
 
 pub mod ingest;
 pub mod intake;
+pub mod intake_loop;
 pub mod outbound;
 pub mod review;
 
@@ -31,8 +32,12 @@ pub fn spawn_all(
   topic_registry: Arc<TopicRegistry>,
 ) -> WorkerHandles {
   WorkerHandles {
-    ingest: tokio::spawn(ingest::run(db.clone(), topic_registry)),
-    intake: tokio::spawn(intake::run(db.clone(), llm_config.clone())),
+    ingest: tokio::spawn(ingest::run(db.clone(), topic_registry.clone())),
+    intake: tokio::spawn(intake::run(
+      db.clone(),
+      llm_config.clone(),
+      topic_registry,
+    )),
     review: tokio::spawn(review::run(db.clone(), llm_config.clone())),
     outbound: tokio::spawn(outbound::run(db)),
   }

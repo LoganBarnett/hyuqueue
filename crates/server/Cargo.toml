@@ -34,6 +34,7 @@ schemars = { workspace = true }
 sd-notify = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sqlx = { workspace = true }
 tap = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

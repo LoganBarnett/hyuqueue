@@ -22,7 +22,69 @@ pub struct CompletionRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
   pub role: Role,
-  pub content: String,
+  /// Text content.  May be `None` for assistant messages whose
+  /// payload is in `tool_calls` (the OpenAI spec allows
+  /// `"content": null` in that case).
+  #[serde(skip_serializing_if = "Option::is_none", default)]
+  pub content: Option<String>,
+  /// Tool calls the assistant invoked in this message.  Echoed back
+  /// into the next turn's `messages` array so the model knows what
+  /// it just did.  Always `None` on user / system / tool messages.
+  #[serde(skip_serializing_if = "Option::is_none", default)]
+  pub tool_calls: Option<Vec<ToolCall>>,
+  /// On a tool-result message (`role = Tool`), identifies which
+  /// `tool_call.id` this result corresponds to.
+  #[serde(skip_serializing_if = "Option::is_none", default)]
+  pub tool_call_id: Option<String>,
+}
+
+impl Message {
+  pub fn system(content: impl Into<String>) -> Self {
+    Self {
+      role: Role::System,
+      content: Some(content.into()),
+      tool_calls: None,
+      tool_call_id: None,
+    }
+  }
+
+  pub fn user(content: impl Into<String>) -> Self {
+    Self {
+      role: Role::User,
+      content: Some(content.into()),
+      tool_calls: None,
+      tool_call_id: None,
+    }
+  }
+
+  /// Echo an assistant message that included tool calls.  Pass
+  /// `content = None` if the model returned no text alongside the
+  /// calls (common for tool-only turns).
+  pub fn assistant_tool_calls(
+    content: Option<String>,
+    tool_calls: Vec<ToolCall>,
+  ) -> Self {
+    Self {
+      role: Role::Assistant,
+      content,
+      tool_calls: Some(tool_calls),
+      tool_call_id: None,
+    }
+  }
+
+  /// Send a tool result back to the model.  `content` is the
+  /// stringified result (typically JSON).
+  pub fn tool_result(
+    tool_call_id: impl Into<String>,
+    content: impl Into<String>,
+  ) -> Self {
+    Self {
+      role: Role::Tool,
+      content: Some(content.into()),
+      tool_calls: None,
+      tool_call_id: Some(tool_call_id.into()),
+    }
+  }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,13 +130,21 @@ pub struct ResponseMessage {
   pub tool_calls: Option<Vec<ToolCall>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
   pub id: String,
+  /// Always `"function"` per the OpenAI spec.  Serialized so we can
+  /// echo tool calls back into the next turn's messages.
+  #[serde(rename = "type", default = "default_tool_type")]
+  pub tool_type: String,
   pub function: ToolCallFunction,
 }
 
-#[derive(Debug, Deserialize)]
+fn default_tool_type() -> String {
+  "function".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallFunction {
   pub name: String,
   pub arguments: String, // JSON string
@@ -128,7 +198,8 @@ impl LlmClient for OpenAiClient {
     &self,
     req: CompletionRequest,
   ) -> Result<CompletionResponse, LlmError> {
-    let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+    let url =
+      format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
     let mut builder = self.http.post(&url).json(&req);
 

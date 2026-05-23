@@ -1,5 +1,6 @@
 //! Item CRUD and action endpoints.
 
+use crate::tx_error::TxOpError;
 use crate::web_base::AppState;
 use axum::{
   extract::{Path, Query, State},
@@ -110,18 +111,19 @@ async fn create_item(
     Ok(()) => {
       (StatusCode::CREATED, Json(json!({ "item": item }))).into_response()
     }
-    Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e })))
+    Err(e) => (
+      StatusCode::INTERNAL_SERVER_ERROR,
+      Json(json!({ "error": e.to_string() })),
+    )
       .into_response(),
   }
 }
 
-async fn create_item_tx(state: &AppState, item: &Item) -> Result<(), String> {
-  let mut tx = state
-    .db
-    .pool()
-    .begin()
-    .await
-    .map_err(|e| format!("begin tx: {e}"))?;
+async fn create_item_tx(
+  state: &AppState,
+  item: &Item,
+) -> Result<(), TxOpError> {
+  let mut tx = state.db.pool().begin().await.map_err(TxOpError::BeginTx)?;
   let event = events::new_item_event(
     item.id,
     EventType::ItemCreated,
@@ -129,16 +131,10 @@ async fn create_item_tx(state: &AppState, item: &Item) -> Result<(), String> {
     Locality::Local,
     json!({ "source": item.source }),
   );
-  events::append(&mut *tx, &event)
-    .await
-    .map_err(|e| format!("event append: {e}"))?;
-  items::insert(&mut *tx, item)
-    .await
-    .map_err(|e| format!("item insert: {e}"))?;
-  queue::enqueue(&mut *tx, queue_names::INTAKE, item.id, 0)
-    .await
-    .map_err(|e| format!("enqueue: {e}"))?;
-  tx.commit().await.map_err(|e| format!("commit: {e}"))?;
+  events::append(&mut *tx, &event).await?;
+  items::insert(&mut *tx, item).await?;
+  queue::enqueue(&mut *tx, queue_names::INTAKE, item.id, 0).await?;
+  tx.commit().await.map_err(TxOpError::CommitTx)?;
   Ok(())
 }
 
@@ -217,7 +213,10 @@ async fn ack_item(
 
   match ack_item_tx(&state, id, &worker_id, lease).await {
     Ok(()) => Json(json!({ "status": "done" })).into_response(),
-    Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e })))
+    Err(e) => (
+      StatusCode::INTERNAL_SERVER_ERROR,
+      Json(json!({ "error": e.to_string() })),
+    )
       .into_response(),
   }
 }
@@ -227,13 +226,8 @@ async fn ack_item_tx(
   id: Uuid,
   worker_id: &str,
   lease: ChronoDuration,
-) -> Result<(), String> {
-  let mut tx = state
-    .db
-    .pool()
-    .begin()
-    .await
-    .map_err(|e| format!("begin tx: {e}"))?;
+) -> Result<(), TxOpError> {
+  let mut tx = state.db.pool().begin().await.map_err(TxOpError::BeginTx)?;
 
   // HTTP API is stateless — each request generates a fresh worker
   // id, so we can't honor a prior lease.  force_claim bypasses
@@ -242,8 +236,7 @@ async fn ack_item_tx(
   // worker ids should hold a real lease and use the worker-id-
   // respecting API instead.
   queue::force_claim(&mut *tx, queue_names::HUMAN, id, worker_id, lease)
-    .await
-    .map_err(|e| format!("force_claim: {e}"))?;
+    .await?;
 
   let event = events::new_item_event(
     id,
@@ -252,9 +245,7 @@ async fn ack_item_tx(
     Locality::Local,
     json!({ "activity_id": "ack" }),
   );
-  events::append(&mut *tx, &event)
-    .await
-    .map_err(|e| format!("event append: {e}"))?;
+  events::append(&mut *tx, &event).await?;
 
   queue::move_item(
     &mut tx,
@@ -263,10 +254,9 @@ async fn ack_item_tx(
     queue_names::OUTTAKE,
     worker_id,
   )
-  .await
-  .map_err(|e| format!("queue move: {e}"))?;
+  .await?;
 
-  tx.commit().await.map_err(|e| format!("commit: {e}"))?;
+  tx.commit().await.map_err(TxOpError::CommitTx)?;
   Ok(())
 }
 

@@ -15,6 +15,7 @@
 //! more about expressing independence than throughput).
 
 use crate::topics::{TopicEntry, TopicRegistry};
+use crate::tx_error::TxOpError;
 use futures::future::join_all;
 use hyuqueue_core::{
   event::{Actor, EventType, Locality},
@@ -94,7 +95,7 @@ async fn persist_item_inner(
   topic_id: &str,
   item_id: Uuid,
   ingest_item: IngestItem,
-) -> Result<(), String> {
+) -> Result<(), TxOpError> {
   let item = Item {
     id: item_id,
     title: ingest_item.title,
@@ -113,11 +114,7 @@ async fn persist_item_inner(
   // enqueue audit event) must succeed atomically — otherwise the
   // intake worker could see a queued item with no projection, or
   // the audit trail could miss an event for an item that exists.
-  let mut tx = db
-    .pool()
-    .begin()
-    .await
-    .map_err(|e| format!("begin tx: {e}"))?;
+  let mut tx = db.pool().begin().await.map_err(TxOpError::BeginTx)?;
 
   events::append(
     &mut *tx,
@@ -132,16 +129,11 @@ async fn persist_item_inner(
       }),
     ),
   )
-  .await
-  .map_err(|e| format!("ItemCreated event append: {e}"))?;
+  .await?;
 
-  items::insert(&mut *tx, &item)
-    .await
-    .map_err(|e| format!("item insert: {e}"))?;
+  items::insert(&mut *tx, &item).await?;
 
-  queue::enqueue(&mut *tx, queue_names::INTAKE, item_id, 0)
-    .await
-    .map_err(|e| format!("enqueue to intake: {e}"))?;
+  queue::enqueue(&mut *tx, queue_names::INTAKE, item_id, 0).await?;
 
   events::append(
     &mut *tx,
@@ -156,9 +148,8 @@ async fn persist_item_inner(
       }),
     ),
   )
-  .await
-  .map_err(|e| format!("ItemEnqueued event append: {e}"))?;
+  .await?;
 
-  tx.commit().await.map_err(|e| format!("commit: {e}"))?;
+  tx.commit().await.map_err(TxOpError::CommitTx)?;
   Ok(())
 }

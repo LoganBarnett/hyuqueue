@@ -11,14 +11,13 @@
 //! the same.
 
 use crate::config::LlmConfig;
+use crate::tx_error::TxOpError;
 use chrono::Duration as ChronoDuration;
 use hyuqueue_core::{
   event::{Actor, EventType, Locality},
   queue as queue_names,
 };
-use hyuqueue_lib::llm::{
-  CompletionRequest, LlmClient, Message, OpenAiClient, Role,
-};
+use hyuqueue_lib::llm::{CompletionRequest, LlmClient, Message, OpenAiClient};
 use hyuqueue_store::{events, items, queue, Db};
 use serde_json::json;
 use std::sync::Arc;
@@ -107,16 +106,7 @@ async fn process_next(
 
   let req = CompletionRequest {
     model: model.to_string(),
-    messages: vec![
-      Message {
-        role: Role::System,
-        content: system_prompt.to_string(),
-      },
-      Message {
-        role: Role::User,
-        content: user_content,
-      },
-    ],
+    messages: vec![Message::system(system_prompt), Message::user(user_content)],
     temperature: Some(0.3),
     tools: None,
   };
@@ -189,22 +179,12 @@ async fn finalize_review(
   worker_id: &str,
   review_event: &hyuqueue_core::event::Event,
   suggestion: Option<hyuqueue_core::item::Item>,
-) -> Result<(), String> {
-  let mut tx = db
-    .pool()
-    .begin()
-    .await
-    .map_err(|e| format!("begin tx: {e}"))?;
-  queue::complete(&mut *tx, queue_names::OUTTAKE, item_id, worker_id)
-    .await
-    .map_err(|e| format!("complete: {e}"))?;
-  events::append(&mut *tx, review_event)
-    .await
-    .map_err(|e| format!("review event append: {e}"))?;
+) -> Result<(), TxOpError> {
+  let mut tx = db.pool().begin().await.map_err(TxOpError::BeginTx)?;
+  queue::complete(&mut *tx, queue_names::OUTTAKE, item_id, worker_id).await?;
+  events::append(&mut *tx, review_event).await?;
   if let Some(s) = suggestion {
-    items::insert(&mut *tx, &s)
-      .await
-      .map_err(|e| format!("suggestion insert: {e}"))?;
+    items::insert(&mut *tx, &s).await?;
     let creation_event = events::new_item_event(
       s.id,
       EventType::ItemCreated,
@@ -212,14 +192,10 @@ async fn finalize_review(
       Locality::Local,
       json!({ "triggered_by": item_id }),
     );
-    events::append(&mut *tx, &creation_event)
-      .await
-      .map_err(|e| format!("suggestion creation event: {e}"))?;
-    queue::enqueue(&mut *tx, queue_names::HUMAN, s.id, 0)
-      .await
-      .map_err(|e| format!("suggestion enqueue: {e}"))?;
+    events::append(&mut *tx, &creation_event).await?;
+    queue::enqueue(&mut *tx, queue_names::HUMAN, s.id, 0).await?;
   }
-  tx.commit().await.map_err(|e| format!("commit: {e}"))?;
+  tx.commit().await.map_err(TxOpError::CommitTx)?;
   Ok(())
 }
 
