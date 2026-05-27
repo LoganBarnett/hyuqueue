@@ -300,6 +300,36 @@ upstream changes.  Right now an in-tree example lets the
 land in the same PR when the protocol shifts.  Graduating it
 prematurely turns every protocol change into a cross-repo dance.
 
+* TODO Host-side dedupe by ~(source, source_topic_id)~
+
+Items already carry ~source~ (origin system) and
+~source_topic_id~ (stable external identifier — RSS ~<guid>~,
+email ~Message-ID~ header, Jira ticket key, etc.).  Add a unique
+constraint on the pair and have the host silently drop duplicate
+inserts.
+
+This makes topic-side ~topic_data~ accounting a /performance/
+optimization rather than a correctness requirement.  A topic that
+crashes after deciding "I'm emitting item X" but before the
+corresponding ~topic_data_set~ notification flushes can safely
+re-emit the same item on restart without producing a duplicate in
+the queue.
+
+** Why now
+
+Prerequisite for the RSS topic to be reliable, and the imap/email
+topic likely to follow it.  Both have stable upstream
+identifiers; the host-dedupe path is the natural place to anchor
+them.
+
+** Out of scope
+
+Topics that /synthesize/ their own dedupe keys (counter-based, no
+stable upstream identifier) are not covered by this — they remain
+exposed to the crash window between "decided to emit" and the
+host having flushed the corresponding ~topic_data_set~.  See the
+parking-lot item about transactional wire bundles.
+
 * DONE Activity declarations as LLM tool definitions
 
 Today an ~Activity~ has ~id~, ~label~, ~key~, ~executor~, ~params:
@@ -1267,6 +1297,32 @@ the federation topic uses, not a fixed daemon worker.
 
 Decide after the federation-as-topic design has shape — whichever
 direction shakes out from that work probably answers this too.
+
+* TODO Transactional wire bundles (topic protocol)
+
+*Parking-lot item — needs human review/approval before acting.*
+
+Today a topic's ~topic_data_set~ notification and the items it
+returns from ~ingest~ are independent wire messages.  A topic
+that crashes between deciding "I'm emitting item X" and the host
+flushing the corresponding ~topic_data_set~ can re-emit on
+restart.
+
+For topics with stable upstream identifiers (RSS ~<guid>~, email
+~Message-ID~, Jira ticket key) host-side ~(source,
+source_topic_id)~ dedupe handles this transparently — see the
+related TODO above.
+
+For topics that /synthesize/ their own dedupe keys (counter-based
+sources, anything without a stable upstream identifier), the gap
+is real.  A protocol extension could let a topic mark a set of
+wire commands as a single transaction — host commits all or
+none.  The ~ingest~ response and a ~topic_data_set~ recording
+"these GUIDs are now seen" would bundle naturally.
+
+Likely trigger: a real topic that needs synthesized identifiers.
+Don't build it speculatively — RSS and imap/email do not need
+this.  Revisit when a concrete candidate appears.
 
 * TODO Defer budget in iron mode
 
