@@ -254,12 +254,8 @@ each method round-trips:
   validate it.  Good first pair: one pure-ingest (RSS? email?) and one
   ingest-plus-activities (Jira? GitHub?  org-mode refile?).  Pick what
   you actually want to use day-to-day.
-- *Topic-data reads.*  Notifications cover writes cleanly.  For reads,
-  decide between (a) inline-on-request — server reads ~topic_data~ for
-  the topic and includes it in the request payload, or (b) a
-  ~topic_data_get~ request from topic → host (bidirectional RPC).
-  Inline is simpler; bidirectional is more flexible but doubles the
-  protocol surface.
+- *Topic-data reads.*  Resolved — see the standalone TODO
+  "Topic-data read path: hydrate on init" below.
 - *Stderr routing.*  Verbatim passthrough is fine for now.  Future:
   topics could emit structured JSON on stderr that the server ingests
   into its tracing layer.
@@ -300,13 +296,60 @@ upstream changes.  Right now an in-tree example lets the
 land in the same PR when the protocol shifts.  Graduating it
 prematurely turns every protocol change into a cross-repo dance.
 
+* TODO Topic-data read path: hydrate on init
+
+The write path (~topic_data_set~ notification, topic → host)
+already exists.  No read path exists yet — ~IngestRequest~ only
+carries ~config~, not the topic's persisted state, so a
+subprocess restart starts with empty in-memory state even though
+SQLite has the last value.
+
+** Resolution
+
+Hydrate at ~init~ time: ~InitResponse~ gains (or a sibling
+host → topic message during the handshake carries) the topic's
+full ~topic_data~ snapshot as a single attrset.  The topic loads
+it into memory, mutates as it likes, and persists changes via
+the existing ~topic_data_set~ notification.
+
+Why this shape, vs. inline-on-every-ingest or a bidirectional
+~topic_data_get~:
+
+- The topic is the /only/ writer of its own data — the host
+  never mutates it on the topic's behalf.  So an init-time
+  snapshot is authoritative and the in-memory mirror stays in
+  sync without re-fetching.
+- Avoids per-ingest payload bloat for topics whose state grows
+  large (RSS GUIDs accumulating over months).
+- Avoids the bidirectional protocol surface and the async
+  fetch-from-topic-side pattern.
+
+** Narrow caveat
+
+Assumes one subprocess per ~topic_id~.  Multiple racing
+instances would diverge their in-memory caches.  We are
+explicitly one-subprocess-per-topic — worth noting in the
+protocol doc but not a real concern.
+
+** Test surface
+
+~topic-example~ currently resets its counter to 0 on every
+spawn even though SQLite has the persisted value.  With the
+hydrate path implemented, the counter resumes — a natural
+regression test for restart durability.
+
 * TODO Host-side dedupe by ~(source, source_topic_id)~
 
 Items already carry ~source~ (origin system) and
 ~source_topic_id~ (stable external identifier — RSS ~<guid>~,
 email ~Message-ID~ header, Jira ticket key, etc.).  Add a unique
-constraint on the pair and have the host silently drop duplicate
-inserts.
+constraint on the pair.  On conflict, ~items::insert~ returns a
+semantic error (~ItemsError::DuplicateSource { source,
+source_topic_id }~); do /not/ silently ignore — the duplicate is
+real information that should surface in logs.  The ingest worker
+catches the error per-item, warns loudly with the
+~(source, source_topic_id)~ pair, and skips that item but
+continues with the rest of the batch.
 
 This makes topic-side ~topic_data~ accounting a /performance/
 optimization rather than a correctness requirement.  A topic that
@@ -314,6 +357,22 @@ crashes after deciding "I'm emitting item X" but before the
 corresponding ~topic_data_set~ notification flushes can safely
 re-emit the same item on restart without producing a duplicate in
 the queue.
+
+** Future: notify topic of the rejection
+
+Today the host logs and drops.  A natural extension is to thread
+the rejection back through the ingest response so the topic can
+prune its own tracked state (mark the GUID as definitely-emitted
+and stop trying).  Skip until a topic actually needs this — the
+host-log-and-skip is enough for v1.
+
+** Test surface
+
+Extend ~topic-example~ to set ~source_topic_id =
+format!("tick-{n}")~ on each emitted item, and add an
+integration test that emits the same tick twice across two
+spawns.  Assert exactly one row lands and the host logged the
+duplicate.
 
 ** Why now
 
@@ -1315,14 +1374,38 @@ related TODO above.
 
 For topics that /synthesize/ their own dedupe keys (counter-based
 sources, anything without a stable upstream identifier), the gap
-is real.  A protocol extension could let a topic mark a set of
-wire commands as a single transaction — host commits all or
-none.  The ~ingest~ response and a ~topic_data_set~ recording
-"these GUIDs are now seen" would bundle naturally.
+is real.
 
-Likely trigger: a real topic that needs synthesized identifiers.
-Don't build it speculatively — RSS and imap/email do not need
-this.  Revisit when a concrete candidate appears.
+** Shape: nested-payload, not BEGIN/COMMIT
+
+Stateful BEGIN/COMMIT requires the host to track open
+transactions keyed by some sender id and reason about timeouts
+and orphaned handles.  A nested-payload design avoids all of
+that — atomicity is /structural/ rather than /temporal/:
+
+#+begin_src json :exports code
+{ "method": "atomic",
+  "params": {
+    "operations": [
+      { "method": "topic_data_set",
+        "params": { "key": "guid:abc", "value": true } },
+      { "method": "...", "params": { ... } }
+    ]
+  } }
+#+end_src
+
+Host opens one SQLite transaction, dispatches each operation in
+order, commits if all succeed or rolls back on the first failure.
+Single response back to the topic carrying the aggregate result.
+No long-held handles, no sender-keyed state, no timeout
+machinery.  Like a Lisp s-expression: composition by value, not
+by reference.
+
+** Likely trigger
+
+A real topic that needs synthesized identifiers.  Don't build it
+speculatively — RSS and imap/email do not need this.  Revisit
+when a concrete candidate appears.
 
 * TODO Defer budget in iron mode
 
