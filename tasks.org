@@ -338,41 +338,99 @@ spawn even though SQLite has the persisted value.  With the
 hydrate path implemented, the counter resumes — a natural
 regression test for restart durability.
 
-* TODO Host-side dedupe by ~(source, source_topic_id)~
+* TODO Item schema: instance / external-id rename + host-side dedupe
 
-Items already carry ~source~ (origin system) and
-~source_topic_id~ (stable external identifier — RSS ~<guid>~,
-email ~Message-ID~ header, Jira ticket key, etc.).  Add a unique
-constraint on the pair.  On conflict, ~items::insert~ returns a
-semantic error (~ItemsError::DuplicateSource { source,
-source_topic_id }~); do /not/ silently ignore — the duplicate is
-real information that should surface in logs.  The ingest worker
-catches the error per-item, warns loudly with the
-~(source, source_topic_id)~ pair, and skips that item but
-continues with the rest of the batch.
+Three concepts are currently squeezed into two confusingly-named
+fields on ~Item~.  Untangling them is a prerequisite for
+host-side dedupe.
+
+** The three concepts
+
+| Concept            | What it identifies                                 |
+|--------------------+----------------------------------------------------|
+| Topic type         | What kind of source (rss, email, jira).            |
+|                    | Declared by the topic binary.                      |
+| Topic instance     | Which configured instance produced this item       |
+|                    | (rss-tech, rss-news, work-email).  Host-assigned   |
+|                    | from the ~[[topics]].id~ field in config.toml.     |
+| External item ID   | The source-system's unique identifier per item     |
+|                    | (RSS ~<guid>~, email ~Message-ID~, ticket key).    |
+|                    | Discovered by the topic from the source data.      |
+
+** Schema changes
+
+- *Rename* ~Item.source_topic_id~ → ~Item.source_instance_id~.
+  Fix the doc to describe what it actually carries (the
+  host-assigned instance name from ~[[topics]].id~).
+- *Add* ~Item.external_id: Option<String>~ for the per-item
+  external identifier.  ~IngestItem~ gets the same field so
+  topics can populate it.  Contract: topics /should/ populate
+  this whenever the source has a stable identifier; absence
+  means "no path back to the origin" — not an error, but reduces
+  what operations are available on that item.  Treat absence as
+  lack-of-information, never as a signal that something went
+  wrong.
+- *Drop* ~Item.source~ from the schema entirely.  Topic type
+  becomes a runtime-derived value: look up the current config
+  for ~source_instance_id~ and report its type.  If the instance
+  is no longer in config, type is ~Unknown~.
+
+** Dedupe constraint
+
+~UNIQUE (source_instance_id, external_id)~ on the ~items~ table.
+SQLite's default NULL-distinct behavior means items without an
+external_id (pushed items, server-generated items, topics
+without stable IDs) are not subject to dedupe — every emission
+inserts a fresh row.  Intentional.
+
+On conflict, ~items::insert~ returns a semantic error
+(~ItemsError::DuplicateSource { source_instance_id, external_id
+}~).  Do /not/ silently ignore.  The ingest worker catches the
+error per-item, warns loudly, and skips that item but continues
+the rest of the batch.
 
 This makes topic-side ~topic_data~ accounting a /performance/
-optimization rather than a correctness requirement.  A topic that
-crashes after deciding "I'm emitting item X" but before the
-corresponding ~topic_data_set~ notification flushes can safely
-re-emit the same item on restart without producing a duplicate in
-the queue.
+optimization rather than a correctness requirement.  A topic
+that crashes after deciding "I'm emitting item X" but before the
+corresponding ~topic_data_set~ flushes can safely re-emit on
+restart without producing a duplicate.
+
+** Rename handling (MVP decision)
+
+Topic-instance renames are /not/ auto-detected.  A config change
+from ~id = "email"~ to ~id = "imap"~ is structurally
+indistinguishable from "remove email, add separate new imap" —
+config carries no rename intent, and the system does not pretend
+to infer it.
+
+For MVP, the contract is: if you rename an instance in config,
+you also run an explicit migration.  Either raw SQL
+(~UPDATE items SET source_instance_id = 'imap' WHERE
+source_instance_id = 'email'~) or a CLI helper
+(~hyuqueue-server rename-instance --from email --to imap~).
+Orphaned items (referencing an instance no longer in config) are
+visible in the UI as ~source_type = Unknown~ and remain
+queryable.
+
+This is acceptable for the single-user MVP audience.  Anything
+more ambitious — admin API, runtime CRUD, declarative
+reconciliation — is captured under the parking-lot TODO
+"Topic-instance management API + admin UI + nix-hapi provider."
 
 ** Future: notify topic of the rejection
 
 Today the host logs and drops.  A natural extension is to thread
 the rejection back through the ingest response so the topic can
-prune its own tracked state (mark the GUID as definitely-emitted
-and stop trying).  Skip until a topic actually needs this — the
-host-log-and-skip is enough for v1.
+prune its own tracked state (mark the external_id as
+definitely-emitted and stop trying).  Skip until a topic
+actually needs this.
 
 ** Test surface
 
-Extend ~topic-example~ to set ~source_topic_id =
-format!("tick-{n}")~ on each emitted item, and add an
-integration test that emits the same tick twice across two
-spawns.  Assert exactly one row lands and the host logged the
-duplicate.
+Extend ~topic-example~ to set ~external_id = format!("tick-{n}")~
+on each emitted item, and add an integration test that emits the
+same tick twice across two spawns.  Assert exactly one row lands
+and the host logged the duplicate.
 
 ** Why now
 
@@ -383,11 +441,11 @@ them.
 
 ** Out of scope
 
-Topics that /synthesize/ their own dedupe keys (counter-based, no
-stable upstream identifier) are not covered by this — they remain
-exposed to the crash window between "decided to emit" and the
-host having flushed the corresponding ~topic_data_set~.  See the
-parking-lot item about transactional wire bundles.
+Topics that /synthesize/ their own dedupe keys (counter-based,
+no stable upstream identifier) are not covered by this — they
+remain exposed to the crash window between "decided to emit"
+and the host having flushed the corresponding ~topic_data_set~.
+See the parking-lot item about transactional wire bundles.
 
 * DONE Activity declarations as LLM tool definitions
 
@@ -1356,6 +1414,55 @@ the federation topic uses, not a fixed daemon worker.
 
 Decide after the federation-as-topic design has shape — whichever
 direction shakes out from that work probably answers this too.
+
+* TODO Topic-instance management API + admin UI + nix-hapi provider
+
+*Parking-lot item — needs human review/approval before acting.*
+
+Today topic instances are configured exclusively via the
+~[[topics]]~ array in ~config.toml~.  Adding, removing, or
+renaming an instance is an "edit config + restart" operation.
+Renames in particular are not auto-detected (see the
+rename-handling MVP decision in the item-schema TODO).
+
+This is acceptable for the single-user MVP audience but is not
+the long-term shape.  Future work:
+
+- *Admin API.*  REST endpoints (e.g. under ~/api/admin/topics~)
+  for CRUD on topic instances.  Source of truth becomes the
+  database, not the config file — or some hybrid where config
+  seeds defaults and runtime CRUD layers on top.
+- *Admin UI.*  A page in the web frontend backed by the API.
+- *nix-hapi provider.*  A declarative-state path for Nix-using
+  operators (the project author included).  ~flake.nix~
+  describes desired topic instances; the provider reconciles
+  against the running server's API.  Same shape as other
+  nix-hapi providers — see ~~/dev/nix-hapi/provider-api.org~.
+- *Explicit rename semantics.*  The API knows the difference
+  between "remove X, add Y" and "rename X to Y."  Items follow
+  on rename.
+
+** Why not now
+
+The single-user audience accepts edit-config-then-restart.
+Renames are rare and the SQL/CLI recipe is documented.
+Building admin UI + API + nix-hapi provider in parallel is
+significant work that should follow real usage signals — not
+speculative scaffolding.
+
+** When to pick this up
+
+When running multiple topic instances becomes painful enough
+that the config-edit-restart loop is a real cost, or when
+shipping the project to users who don't live in their config
+files.
+
+** Positioning note
+
+nix-hapi will be /one/ of multiple paths, not "the way."  This
+project is not a Nix project — it just happens to use Nix.
+Direct config editing and the admin UI must continue to work
+for users who don't use Nix.
 
 * TODO Transactional wire bundles (topic protocol)
 
