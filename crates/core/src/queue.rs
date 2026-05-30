@@ -31,13 +31,14 @@ pub const ERRORS: &str = "errors";
 
 /// Filter expression applied to `list(queue, filter)` operations.
 ///
-/// v1 supports filtering by `source` only.  Richer expressions
-/// (source_topic_id, metadata JSON paths, full-text search) land
-/// later — the data layer just needs to accept this struct, the
-/// presentation layer (CLI, TUI, Emacs) builds it from user input.
+/// v1 supports filtering by `source_instance_id` only.  Richer
+/// expressions (topic-type via runtime config lookup, metadata JSON
+/// paths, full-text search) land later — the data layer just needs
+/// to accept this struct, and the presentation layer (CLI, TUI,
+/// Emacs) builds it from user input.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SourceFilter {
-  /// Only return items whose `source` field equals this string.
-  /// `None` means no filter.
-  pub source: Option<String>,
+  /// Only return items whose `source_instance_id` equals this
+  /// string.  `None` means no filter.
+  pub source_instance_id: Option<String>,
 }

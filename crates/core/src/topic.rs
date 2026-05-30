@@ -7,11 +7,21 @@ use thiserror::Error;
 
 /// An item produced by a topic's `ingest()` method. The core crate stays
 /// pure — the server worker handles DB insertion and event creation.
+///
+/// The host fills in `source_instance_id` on the resulting `Item`
+/// from the topic's configured instance id; the topic does not need
+/// to (and cannot meaningfully) provide it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestItem {
   pub title: String,
-  pub source: String,
   pub body: Option<String>,
+  /// Stable per-item identifier in the source system (RSS `<guid>`,
+  /// email `Message-ID`, ticket key).  Topics should populate this
+  /// whenever the source has a stable id — it is what enables
+  /// host-side dedupe and traceback to the origin.  Leave `None`
+  /// only when the source genuinely has no stable identifier.
+  #[serde(default)]
+  pub external_id: Option<String>,
   pub metadata: serde_json::Value,
 }
 
@@ -43,8 +53,8 @@ pub trait Topic: Send + Sync {
     Ok(vec![])
   }
 
-  /// Activities available on items whose `source_topic_id` matches
-  /// this topic.
+  /// Activities available on items whose `source_instance_id`
+  /// matches this topic's configured instance id.
   fn item_activities(&self) -> Vec<Activity> {
     vec![]
   }

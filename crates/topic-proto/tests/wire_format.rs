@@ -236,8 +236,8 @@ fn ingest_response_round_trips() {
   round_trip(&IngestResponse {
     items: vec![IngestItem {
       title: "Tick #1".to_string(),
-      source: "example".to_string(),
       body: None,
+      external_id: Some("tick-1".to_string()),
       metadata: json!({"counter": 1}),
     }],
   });

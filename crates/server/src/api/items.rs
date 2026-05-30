@@ -41,8 +41,9 @@ pub fn router() -> Router<AppState> {
 
 #[derive(Debug, Deserialize)]
 pub struct ListParams {
-  /// Optional source filter (e.g. ?source=email).
-  pub source: Option<String>,
+  /// Optional filter on the host-assigned topic instance id
+  /// (e.g. ?source_instance_id=work-email).
+  pub source_instance_id: Option<String>,
   #[serde(default = "default_limit")]
   pub limit: i64,
   #[serde(default)]
@@ -59,7 +60,7 @@ async fn list_items(
 ) -> impl IntoResponse {
   match items::list(
     state.db.pool(),
-    params.source.as_deref(),
+    params.source_instance_id.as_deref(),
     params.limit,
     params.offset,
   )
@@ -80,8 +81,8 @@ async fn list_items(
 pub struct CreateItemRequest {
   pub title: String,
   pub body: Option<String>,
-  pub source: String,
-  pub source_topic_id: Option<String>,
+  pub source_instance_id: Option<String>,
+  pub external_id: Option<String>,
   #[serde(default)]
   pub metadata: serde_json::Value,
 }
@@ -95,8 +96,8 @@ async fn create_item(
     id: Uuid::new_v4(),
     title: req.title,
     body: req.body,
-    source_topic_id: req.source_topic_id,
-    source: req.source,
+    source_instance_id: req.source_instance_id,
+    external_id: req.external_id,
     delegate_from: None,
     delegate_chain: vec![],
     capabilities: vec![],
@@ -129,7 +130,10 @@ async fn create_item_tx(
     EventType::ItemCreated,
     Actor::System,
     Locality::Local,
-    json!({ "source": item.source }),
+    json!({
+      "source_instance_id": item.source_instance_id,
+      "external_id": item.external_id,
+    }),
   );
   events::append(&mut *tx, &event).await?;
   items::insert(&mut *tx, item).await?;

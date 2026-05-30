@@ -126,11 +126,59 @@ fn split_sql_statements(sql: &str) -> Vec<String> {
   stmts
 }
 
+/// Ordered list of schema migrations applied at startup.  Each entry
+/// is `(name, body)`; `name` is stored in `schema_migrations` so a
+/// migration runs at most once against any given database.
+///
+/// Append new entries at the end.  Do not edit or reorder existing
+/// entries — once a name has been recorded as applied, changing its
+/// body has no effect on already-migrated databases.
+const MIGRATIONS: &[(&str, &str)] = &[
+  ("001_initial", include_str!("../migrations/001_initial.sql")),
+  (
+    "002_item_schema_refactor",
+    include_str!("../migrations/002_item_schema_refactor.sql"),
+  ),
+];
+
 async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-  let sql = include_str!("../migrations/001_initial.sql");
-  for stmt in split_sql_statements(sql) {
-    sqlx::query(&stmt).execute(pool).await?;
+  // Use a single connection so per-connection pragmas (notably
+  // `foreign_keys = OFF/ON` around table rebuilds) apply across all
+  // statements of a migration.
+  let mut conn = pool.acquire().await?;
+
+  sqlx::query(
+    "CREATE TABLE IF NOT EXISTS schema_migrations (
+       name       TEXT PRIMARY KEY,
+       applied_at TEXT NOT NULL
+     )",
+  )
+  .execute(&mut *conn)
+  .await?;
+
+  for (name, sql) in MIGRATIONS {
+    let already: Option<(String,)> =
+      sqlx::query_as("SELECT name FROM schema_migrations WHERE name = ?")
+        .bind(name)
+        .fetch_optional(&mut *conn)
+        .await?;
+    if already.is_some() {
+      continue;
+    }
+
+    for stmt in split_sql_statements(sql) {
+      sqlx::query(&stmt).execute(&mut *conn).await?;
+    }
+
+    sqlx::query(
+      "INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)",
+    )
+    .bind(name)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(&mut *conn)
+    .await?;
   }
+
   Ok(())
 }
 

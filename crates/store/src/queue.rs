@@ -464,7 +464,7 @@ pub async fn list<'e, E: SqliteExecutor<'e>>(
   queue_name: &str,
   filter: &SourceFilter,
 ) -> Result<Vec<QueueEntry>, QueueError> {
-  let source_filter = filter.source.as_deref();
+  let source_filter = filter.source_instance_id.as_deref();
   let rows: Vec<(
     String,
     i64,
@@ -478,7 +478,7 @@ pub async fn list<'e, E: SqliteExecutor<'e>>(
      FROM queue_items q
      INNER JOIN items i ON i.id = q.item_id
      WHERE q.queue_name = ?
-       AND (? IS NULL OR i.source = ?)
+       AND (? IS NULL OR i.source_instance_id = ?)
      ORDER BY q.priority DESC, q.enqueued_at ASC",
   )
   .bind(queue_name)
@@ -609,14 +609,14 @@ mod tests {
     Db::open(":memory:").await.unwrap()
   }
 
-  async fn insert_item(db: &Db, source: &str) -> Uuid {
+  async fn insert_item(db: &Db, source_instance_id: &str) -> Uuid {
     let now = Utc::now();
     let item = Item {
       id: Uuid::new_v4(),
-      title: format!("test item ({source})"),
+      title: format!("test item ({source_instance_id})"),
       body: None,
-      source_topic_id: None,
-      source: source.to_string(),
+      source_instance_id: Some(source_instance_id.to_string()),
+      external_id: None,
       delegate_from: None,
       delegate_chain: vec![],
       capabilities: vec![],
@@ -852,7 +852,7 @@ mod tests {
       db.pool(),
       "human",
       &SourceFilter {
-        source: Some("email".to_string()),
+        source_instance_id: Some("email".to_string()),
       },
     )
     .await

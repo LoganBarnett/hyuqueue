@@ -51,11 +51,12 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-  /// List items, optionally filtered by source.
+  /// List items, optionally filtered by source instance id.
   List {
-    /// Optional source filter (e.g. --source email).
+    /// Optional filter on the host-assigned topic instance id
+    /// (e.g. --source-instance-id work-email).
     #[arg(long)]
-    source: Option<String>,
+    source_instance_id: Option<String>,
     #[arg(long, default_value = "50")]
     limit: i64,
   },
@@ -67,10 +68,17 @@ enum Commands {
   Add {
     #[arg(long)]
     title: String,
-    /// Origin system identifier (e.g. "email", "jira", "slack").
-    /// Required.
+    /// Identifier of the topic instance this item is attributed to
+    /// (e.g. "work-email").  Free-form for the add command — no
+    /// requirement that the value match a live `[[topics]]`
+    /// instance.
     #[arg(long)]
-    source: String,
+    source_instance_id: Option<String>,
+    /// Stable per-item identifier in the source system (e.g.
+    /// `Message-ID` for an email).  Optional, but populating it
+    /// enables host-side dedupe.
+    #[arg(long)]
+    external_id: Option<String>,
     #[arg(long)]
     body: Option<String>,
     /// JSON metadata blob.
@@ -121,10 +129,13 @@ async fn main() -> Result<(), ApplicationError> {
   let base = config.server_url.trim_end_matches('/').to_string();
 
   let result = match cli.command {
-    Commands::List { source, limit } => {
+    Commands::List {
+      source_instance_id,
+      limit,
+    } => {
       let mut url = format!("{base}/api/v1/items?limit={limit}");
-      if let Some(s) = source {
-        url.push_str(&format!("&source={s}"));
+      if let Some(s) = source_instance_id {
+        url.push_str(&format!("&source_instance_id={s}"));
       }
       http.get(&url).send().await?.text().await?
     }
@@ -140,7 +151,8 @@ async fn main() -> Result<(), ApplicationError> {
 
     Commands::Add {
       title,
-      source,
+      source_instance_id,
+      external_id,
       body,
       meta,
     } => {
@@ -151,7 +163,8 @@ async fn main() -> Result<(), ApplicationError> {
 
       let body_json = serde_json::json!({
         "title": title,
-        "source": source,
+        "source_instance_id": source_instance_id,
+        "external_id": external_id,
         "body": body,
         "metadata": metadata,
       });

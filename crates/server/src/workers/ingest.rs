@@ -23,7 +23,7 @@ use hyuqueue_core::{
   queue as queue_names,
   topic::{IngestItem, TopicCtx},
 };
-use hyuqueue_store::{events, items, queue, Db};
+use hyuqueue_store::{events, items, items::ItemsError, queue, Db};
 use serde_json::json;
 use std::sync::Arc;
 use tap::TapFallible;
@@ -85,8 +85,28 @@ async fn ingest_one_topic(
 
 async fn persist_item(db: &Db, topic_id: &str, ingest_item: IngestItem) {
   let item_id = Uuid::new_v4();
-  if let Err(e) = persist_item_inner(db, topic_id, item_id, ingest_item).await {
-    error!(topic = %topic_id, item_id = %item_id, "Failed to persist: {e}");
+  match persist_item_inner(db, topic_id, item_id, ingest_item).await {
+    Ok(()) => {}
+    // A duplicate per `(source_instance_id, external_id)` is real
+    // information — log it loudly with the pair so it is actionable
+    // in logs — but don't abort the rest of the batch.  This is
+    // the expected outcome when a topic crashes mid-emission and
+    // re-emits on restart.
+    Err(TxOpError::Items(ItemsError::DuplicateSource {
+      source_instance_id,
+      external_id,
+    })) => {
+      warn!(
+        topic = %topic_id,
+        source_instance_id = ?source_instance_id,
+        external_id = ?external_id,
+        "Dropping duplicate item: (source_instance_id, external_id) \
+         already present in the database",
+      );
+    }
+    Err(e) => {
+      error!(topic = %topic_id, item_id = %item_id, "Failed to persist: {e}");
+    }
   }
 }
 
@@ -96,12 +116,18 @@ async fn persist_item_inner(
   item_id: Uuid,
   ingest_item: IngestItem,
 ) -> Result<(), TxOpError> {
+  // `source_instance_id` is the host-assigned instance name (the
+  // `[[topics]].id` field in config.toml), which the registry passes
+  // in as `topic_id` here.  `external_id` is whatever stable
+  // upstream identifier the topic found for this item — used by the
+  // host's `(source_instance_id, external_id)` UNIQUE constraint to
+  // dedupe re-emissions.
   let item = Item {
     id: item_id,
     title: ingest_item.title,
     body: ingest_item.body,
-    source_topic_id: Some(topic_id.to_string()),
-    source: ingest_item.source.clone(),
+    source_instance_id: Some(topic_id.to_string()),
+    external_id: ingest_item.external_id.clone(),
     delegate_from: None,
     delegate_chain: vec![],
     capabilities: vec![],
@@ -124,7 +150,8 @@ async fn persist_item_inner(
       Actor::Topic(topic_id.to_string()),
       Locality::Local,
       json!({
-        "source": ingest_item.source,
+        "source_instance_id": topic_id,
+        "external_id": ingest_item.external_id,
         "metadata": ingest_item.metadata,
       }),
     ),

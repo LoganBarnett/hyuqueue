@@ -214,8 +214,8 @@ async fn ingest_returns_items() {
       IngestResponse {
         items: vec![hyuqueue_core::topic::IngestItem {
           title: "tick".to_string(),
-          source: "t".to_string(),
           body: None,
+          external_id: None,
           metadata: json!({"n": 1}),
         }],
       },
@@ -400,8 +400,8 @@ async fn concurrent_requests_resolve_correctly_out_of_order() {
       IngestResponse {
         items: vec![hyuqueue_core::topic::IngestItem {
           title: "from-req2".to_string(),
-          source: "t".to_string(),
           body: None,
+          external_id: None,
           metadata: json!({}),
         }],
       },
@@ -413,8 +413,8 @@ async fn concurrent_requests_resolve_correctly_out_of_order() {
       IngestResponse {
         items: vec![hyuqueue_core::topic::IngestItem {
           title: "from-req1".to_string(),
-          source: "t".to_string(),
           body: None,
+          external_id: None,
           metadata: json!({}),
         }],
       },

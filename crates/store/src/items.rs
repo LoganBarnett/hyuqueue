@@ -9,6 +9,20 @@ pub enum ItemsError {
   #[error("Item '{0}' not found")]
   NotFound(Uuid),
 
+  /// `UNIQUE (source_instance_id, external_id)` constraint fired:
+  /// an item with this pair already exists in the database.  The
+  /// caller (typically the ingest worker) is expected to log and
+  /// skip rather than abort the batch.  Surfaced rather than
+  /// silently ignored so the duplicate is real information in logs.
+  #[error(
+    "Duplicate item: source_instance_id={source_instance_id:?} \
+     external_id={external_id:?} already exists"
+  )]
+  DuplicateSource {
+    source_instance_id: Option<String>,
+    external_id: Option<String>,
+  },
+
   #[error("Database error while {context}: {source}")]
   Db {
     context: &'static str,
@@ -33,8 +47,8 @@ struct ItemRow {
   id: String,
   title: String,
   body: Option<String>,
-  source_topic_id: Option<String>,
-  source: String,
+  source_instance_id: Option<String>,
+  external_id: Option<String>,
   delegate_from: Option<String>,
   delegate_chain: String,
   capabilities: String,
@@ -49,8 +63,8 @@ impl ItemRow {
       id: Uuid::parse_str(&self.id).unwrap_or_default(),
       title: self.title,
       body: self.body,
-      source_topic_id: self.source_topic_id,
-      source: self.source,
+      source_instance_id: self.source_instance_id,
+      external_id: self.external_id,
       delegate_from: self
         .delegate_from
         .as_deref()
@@ -80,7 +94,7 @@ pub async fn insert<'e, E: SqliteExecutor<'e>>(
   let metadata_str = ser(&item.metadata, "metadata")?;
   sqlx::query(
     "INSERT INTO items
-       (id, title, body, source_topic_id, source,
+       (id, title, body, source_instance_id, external_id,
         delegate_from, delegate_chain, capabilities, metadata,
         created_at, updated_at)
      VALUES (?,?,?,?,?,?,?,?,?,?,?)",
@@ -88,8 +102,8 @@ pub async fn insert<'e, E: SqliteExecutor<'e>>(
   .bind(item.id.to_string())
   .bind(&item.title)
   .bind(&item.body)
-  .bind(&item.source_topic_id)
-  .bind(&item.source)
+  .bind(&item.source_instance_id)
+  .bind(&item.external_id)
   .bind(delegate_from_str)
   .bind(delegate_chain_str)
   .bind(capabilities_str)
@@ -98,11 +112,35 @@ pub async fn insert<'e, E: SqliteExecutor<'e>>(
   .bind(&now)
   .execute(executor)
   .await
-  .map_err(|source| ItemsError::Db {
+  .map_err(|source| classify_insert_error(source, item))?;
+  Ok(())
+}
+
+/// Map an SQLite error from `insert` to the semantic error.  A
+/// UNIQUE constraint violation on `(source_instance_id, external_id)`
+/// becomes `DuplicateSource`; everything else stays a generic
+/// database error.  Detection uses the SQLite extended error code
+/// (SQLITE_CONSTRAINT_UNIQUE = 2067); the constraint name in the
+/// message is checked as a guard so other UNIQUE violations (e.g. a
+/// future column) do not get misclassified.
+fn classify_insert_error(source: sqlx::Error, item: &Item) -> ItemsError {
+  if let sqlx::Error::Database(ref db) = source {
+    let code = db.code().as_deref().unwrap_or_default().to_string();
+    let msg = db.message();
+    let is_unique_violation = code == "2067" || code == "1555";
+    let names_dedupe_pair =
+      msg.contains("source_instance_id") && msg.contains("external_id");
+    if is_unique_violation && names_dedupe_pair {
+      return ItemsError::DuplicateSource {
+        source_instance_id: item.source_instance_id.clone(),
+        external_id: item.external_id.clone(),
+      };
+    }
+  }
+  ItemsError::Db {
     context: "inserting item",
     source,
-  })?;
-  Ok(())
+  }
 }
 
 fn ser<T: serde::Serialize>(
@@ -130,24 +168,24 @@ pub async fn get<'e, E: SqliteExecutor<'e>>(
   row.into_item().map_err(ItemsError::Deserialize)
 }
 
-/// List items, optionally filtered by source.  Note this is a raw
-/// item listing — for "what's in a queue" use
+/// List items, optionally filtered by `source_instance_id`.  Note
+/// this is a raw item listing — for "what's in a queue" use
 /// `hyuqueue_store::queue::list` which respects queue membership
 /// and shows claim state.
 pub async fn list<'e, E: SqliteExecutor<'e>>(
   executor: E,
-  source: Option<&str>,
+  source_instance_id: Option<&str>,
   limit: i64,
   offset: i64,
 ) -> Result<Vec<Item>, ItemsError> {
   let rows = sqlx::query_as::<_, ItemRow>(
     "SELECT * FROM items
-     WHERE (? IS NULL OR source = ?)
+     WHERE (? IS NULL OR source_instance_id = ?)
      ORDER BY created_at DESC
      LIMIT ? OFFSET ?",
   )
-  .bind(source)
-  .bind(source)
+  .bind(source_instance_id)
+  .bind(source_instance_id)
   .bind(limit)
   .bind(offset)
   .fetch_all(executor)

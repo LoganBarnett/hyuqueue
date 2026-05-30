@@ -170,7 +170,7 @@ fn clone_topic_error(e: &TopicError) -> TopicError {
 // ── fixtures ─────────────────────────────────────────────────────────
 
 fn test_item(
-  source_topic_id: Option<&str>,
+  source_instance_id: Option<&str>,
   capabilities: Vec<Activity>,
 ) -> Item {
   let now = Utc::now();
@@ -178,8 +178,8 @@ fn test_item(
     id: Uuid::new_v4(),
     title: "test item".to_string(),
     body: Some("test body".to_string()),
-    source_topic_id: source_topic_id.map(|s| s.to_string()),
-    source: source_topic_id.unwrap_or("manual").to_string(),
+    source_instance_id: source_instance_id.map(|s| s.to_string()),
+    external_id: None,
     delegate_from: None,
     delegate_chain: vec![],
     capabilities,

@@ -13,8 +13,11 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourcePolicy {
   pub id: Uuid,
-  /// Glob/regex matched against "{source_topic_id}:{source}" of incoming items.
-  /// Example: "email:amazon.com" or "jira:*"
+  /// Glob/regex matched against `source_instance_id` of incoming
+  /// items.  Example: "work-email" or "jira-*".  Topic-type matching
+  /// (e.g. "all RSS feeds") is derived at evaluation time by looking
+  /// up the live config — the persisted item only carries the
+  /// instance id.
   pub source_pattern: String,
   /// System prompt given to the intake LLM for matching items.
   pub system_prompt: String,

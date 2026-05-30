@@ -7,6 +7,16 @@ use uuid::Uuid;
 /// the system (intake-pending, awaiting-human, etc.) is determined
 /// by queue membership in `queue_items`, not by a field on the item
 /// itself.
+///
+/// Three concepts that often get conflated:
+///
+/// - *Topic type* — what kind of source ("rss", "email").  Declared
+///   by the topic binary.  *Not* persisted on the item; derived at
+///   display time from the live config keyed by
+///   `source_instance_id`.  Renaming a topic type therefore does not
+///   strand existing items.
+/// - *Topic instance* — `source_instance_id` below.
+/// - *External item id* — `external_id` below.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Item {
   pub id: Uuid,
@@ -14,12 +24,25 @@ pub struct Item {
   pub title: String,
   /// Optional longer body — email body, ticket description, etc.
   pub body: Option<String>,
-  /// Which topic produced this item (e.g. "jira", "email").
-  pub source_topic_id: Option<String>,
-  /// The `--source` tag required on every item.  Identifies the
-  /// origin system for calibration and analytics ("email", "jira",
-  /// "slack", etc.).
-  pub source: String,
+  /// Host-assigned instance identifier for the topic that produced
+  /// this item — the `[[topics]].id` field from `config.toml` (e.g.
+  /// "rss-tech", "work-email").  For items pushed via the webhook
+  /// API, supplied by the caller.  May be `None` for one-off pushed
+  /// items and server-generated items with no associated instance.
+  pub source_instance_id: Option<String>,
+  /// Stable per-item identifier within the source system (RSS
+  /// `<guid>`, email `Message-ID`, Jira ticket key, etc.).
+  ///
+  /// Topics *should* populate this whenever the source has a stable
+  /// identifier.  Absence is not an error — it means "no path back
+  /// to origin," and may reduce what operations are available on
+  /// this item.  Treat absence as lack-of-information, never as a
+  /// signal that something went wrong.
+  ///
+  /// Host-side dedupe is keyed off `(source_instance_id,
+  /// external_id)`.  Items without an `external_id` are not
+  /// deduplicated (SQLite treats NULLs as distinct under `UNIQUE`).
+  pub external_id: Option<String>,
   /// Set when this item was published from another hyuqueue instance.
   pub delegate_from: Option<DelegateRef>,
   /// Full provenance trail — ordered from origin to here.

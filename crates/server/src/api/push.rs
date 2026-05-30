@@ -22,10 +22,17 @@ use uuid::Uuid;
 pub struct PushRequest {
   pub title: String,
   pub body: Option<String>,
-  /// Required: identifies the origin system (e.g. "email", "jira",
-  /// "slack").
-  pub source: String,
-  pub source_topic_id: Option<String>,
+  /// Optional: which configured topic instance this push is being
+  /// attributed to (e.g. "work-email").  Free-form for the push API
+  /// — there is no requirement that the value match a live
+  /// `[[topics]]` instance, though using a matching id is what
+  /// enables topic-type derivation for display.
+  pub source_instance_id: Option<String>,
+  /// Optional: stable per-item identifier in the source system
+  /// (e.g. `Message-ID` for emails pushed by an external script).
+  /// Populating this enables host-side dedupe on
+  /// `(source_instance_id, external_id)`.
+  pub external_id: Option<String>,
   #[serde(default)]
   pub metadata: serde_json::Value,
 }
@@ -39,8 +46,8 @@ pub async fn handle_push(
     id: Uuid::new_v4(),
     title: req.title,
     body: req.body,
-    source_topic_id: req.source_topic_id,
-    source: req.source,
+    source_instance_id: req.source_instance_id,
+    external_id: req.external_id,
     delegate_from: None,
     delegate_chain: vec![],
     capabilities: vec![],
@@ -67,7 +74,11 @@ async fn push_tx(state: &AppState, item: &Item) -> Result<(), TxOpError> {
     EventType::ItemCreated,
     Actor::System,
     Locality::Local,
-    json!({ "source": item.source, "via": "push_webhook" }),
+    json!({
+      "source_instance_id": item.source_instance_id,
+      "external_id": item.external_id,
+      "via": "push_webhook",
+    }),
   );
   events::append(&mut *tx, &event).await?;
   items::insert(&mut *tx, item).await?;

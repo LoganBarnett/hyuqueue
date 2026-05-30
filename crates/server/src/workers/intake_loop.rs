@@ -270,8 +270,8 @@ pub async fn run_loop(
   );
 
   let user_content = format!(
-    "Item to triage.\nSource: {}\nTitle: {}\nBody:\n{}",
-    item.source,
+    "Item to triage.\nSource instance: {}\nTitle: {}\nBody:\n{}",
+    item.source_instance_id.as_deref().unwrap_or("<none>"),
     item.title,
     item.body.as_deref().unwrap_or("(no body)")
   );

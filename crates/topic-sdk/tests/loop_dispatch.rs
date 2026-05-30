@@ -112,8 +112,8 @@ impl Topic for TickingTopic {
   ) -> Result<Vec<IngestItem>, TopicError> {
     Ok(vec![IngestItem {
       title: "tick".to_string(),
-      source: "ticking".to_string(),
       body: None,
+      external_id: None,
       metadata: json!({"n": 1}),
     }])
   }
@@ -239,7 +239,7 @@ async fn ingest_returns_items() {
       let items = s.result["items"].as_array().unwrap();
       assert_eq!(items.len(), 1);
       assert_eq!(items[0]["title"], "tick");
-      assert_eq!(items[0]["source"], "ticking");
+      assert_eq!(items[0]["metadata"]["n"], 1);
     }
     Response::Error(e) => panic!("expected success, got {:?}", e),
   }

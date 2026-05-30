@@ -88,7 +88,7 @@ async fn ingest_produces_tick_and_persists_counter() {
   let ctx = TopicCtx::stub();
   let items = topic.ingest(&ctx, &json!({})).await.unwrap();
   assert_eq!(items.len(), 1);
-  assert_eq!(items[0].source, "example");
+  assert_eq!(items[0].external_id.as_deref(), Some("tick-1"));
   assert!(
     items[0].title.starts_with("tick #"),
     "unexpected title: {:?}",

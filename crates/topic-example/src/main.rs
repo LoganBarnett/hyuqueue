@@ -106,8 +106,14 @@ impl Topic for ExampleTopic {
     self.persist_counter(ctx, "ingest", next).await?;
     Ok(vec![IngestItem {
       title: format!("tick #{next}"),
-      source: ID.to_string(),
       body: None,
+      // Synthesized stable identifier: pretending each tick has a
+      // distinct upstream id.  Exercises host-side dedupe on
+      // (source_instance_id, external_id) — if the host re-spawns
+      // this topic and the counter resets to the same value, the
+      // duplicate insert is caught and dropped at the database
+      // boundary.
+      external_id: Some(format!("tick-{next}")),
       metadata: json!({ COUNTER_KEY: next }),
     }])
   }

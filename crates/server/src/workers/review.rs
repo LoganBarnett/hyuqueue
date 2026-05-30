@@ -75,12 +75,14 @@ async fn process_next(
     }
   };
 
-  // Fetch recent items from the same source for context.
+  // Fetch recent items from the same instance for context.
   let recent = items::list(db.pool(), None, 50, 0)
     .await
     .unwrap_or_default()
     .into_iter()
-    .filter(|i| i.source == item.source && i.id != item.id)
+    .filter(|i| {
+      i.source_instance_id == item.source_instance_id && i.id != item.id
+    })
     .take(10)
     .map(|i| {
       json!({
@@ -98,8 +100,8 @@ async fn process_next(
     Otherwise: {\"suggest\": true, \"title\": str, \"description\": str}";
 
   let user_content = format!(
-    "Item source: {}\nItem title: {}\n\nRecent similar items: {}",
-    item.source,
+    "Item source_instance: {}\nItem title: {}\n\nRecent similar items: {}",
+    item.source_instance_id.as_deref().unwrap_or("<none>"),
     item.title,
     serde_json::to_string_pretty(&recent).unwrap_or_default()
   );
@@ -217,14 +219,14 @@ fn build_suggestion(
     id: Uuid::new_v4(),
     title: format!("[suggestion] {title}"),
     body: Some(description.to_string()),
-    source_topic_id: None,
-    source: "review_llm".to_string(),
+    source_instance_id: Some("review_llm".to_string()),
+    external_id: None,
     delegate_from: None,
     delegate_chain: vec![],
     capabilities: vec![],
     metadata: json!({
       "triggered_by_item_id": triggered_by,
-      "source_item_source": source_item.source,
+      "source_item_instance": source_item.source_instance_id,
       "suggestion": decision,
     }),
     created_at: chrono::Utc::now(),
