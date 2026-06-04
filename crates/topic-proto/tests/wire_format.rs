@@ -189,6 +189,24 @@ fn init_request_round_trips() {
 }
 
 #[test]
+fn init_request_round_trips_with_topic_data() {
+  let mut topic_data = std::collections::HashMap::new();
+  topic_data.insert("counter".to_string(), json!(7));
+  topic_data.insert("cursor".to_string(), json!({ "last_seen": "2024-01-01" }));
+  round_trip(&InitRequest { topic_data });
+}
+
+#[test]
+fn init_request_omitted_topic_data_defaults_to_empty() {
+  // Older clients (or empty-state topics) may serialize the init
+  // request with no `topic_data` field at all.  The receiver must
+  // accept that and default to an empty map.
+  let raw = json!({});
+  let parsed: InitRequest = serde_json::from_value(raw).unwrap();
+  assert!(parsed.topic_data.is_empty());
+}
+
+#[test]
 fn init_response_round_trips() {
   let resp = InitResponse {
     id: "example".to_string(),

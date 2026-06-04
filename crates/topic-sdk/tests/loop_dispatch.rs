@@ -228,6 +228,69 @@ async fn init_returns_topic_identity() {
   let _ = h.sdk_handle.await.unwrap();
 }
 
+/// A topic that records the `topic_data` snapshot it was hydrated
+/// with at init time.  Used to verify the SDK actually passes the
+/// snapshot through from `InitRequest.topic_data` to `Topic::init`.
+struct HydratingTopic {
+  hydrated:
+    Arc<Mutex<Option<std::collections::HashMap<String, serde_json::Value>>>>,
+}
+
+#[async_trait]
+impl Topic for HydratingTopic {
+  fn id(&self) -> &str {
+    "hydrating"
+  }
+  fn display_name(&self) -> &str {
+    "Hydrating"
+  }
+  async fn init(
+    &self,
+    _ctx: &TopicCtx,
+    data: std::collections::HashMap<String, serde_json::Value>,
+  ) -> Result<(), TopicError> {
+    *self.hydrated.lock().unwrap() = Some(data);
+    Ok(())
+  }
+  async fn execute(
+    &self,
+    _ctx: &TopicCtx,
+    invocation: &ActivityInvocation,
+    _item_id: Uuid,
+  ) -> Result<Event, TopicError> {
+    Err(TopicError::UnsupportedActivity(
+      invocation.activity_id.clone(),
+      self.id().to_string(),
+    ))
+  }
+}
+
+#[tokio::test]
+async fn init_passes_topic_data_snapshot_to_topic() {
+  let hydrated = Arc::new(Mutex::new(None));
+  let topic = HydratingTopic {
+    hydrated: hydrated.clone(),
+  };
+  let mut h = Harness::spawn(topic);
+  h.send(req(
+    1,
+    method::INIT,
+    json!({ "topic_data": { "counter": 7, "cursor": "abc" } }),
+  ))
+  .await;
+  let _ = h.recv().await;
+
+  let captured = hydrated.lock().unwrap();
+  let map = captured.as_ref().expect("topic.init was not called");
+  assert_eq!(map.len(), 2);
+  assert_eq!(map.get("counter").unwrap(), &json!(7));
+  assert_eq!(map.get("cursor").unwrap(), &json!("abc"));
+  drop(captured);
+
+  drop(h.requests);
+  let _ = h.sdk_handle.await.unwrap();
+}
+
 #[tokio::test]
 async fn ingest_returns_items() {
   let mut h = Harness::spawn(TickingTopic);

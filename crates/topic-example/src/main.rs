@@ -18,6 +18,7 @@ use hyuqueue_core::activity::{
 use hyuqueue_core::event::{Actor, Event, EventType, Locality};
 use hyuqueue_core::topic::{IngestItem, Topic, TopicCtx, TopicError};
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use uuid::Uuid;
 
@@ -58,6 +59,22 @@ impl Topic for ExampleTopic {
 
   fn display_name(&self) -> &str {
     "Example"
+  }
+
+  async fn init(
+    &self,
+    _ctx: &TopicCtx,
+    data: HashMap<String, serde_json::Value>,
+  ) -> Result<(), TopicError> {
+    // Resume the counter from persisted state if present.  Without
+    // this, every subprocess restart starts the counter at 0,
+    // re-emitting "tick-1" and triggering the host's dedupe path.
+    // With this, the counter picks up where the previous instance
+    // left off and subsequent ticks have fresh external_ids.
+    if let Some(value) = data.get(COUNTER_KEY).and_then(|v| v.as_i64()) {
+      self.counter.store(value, Ordering::Relaxed);
+    }
+    Ok(())
   }
 
   fn item_activities(&self) -> Vec<Activity> {

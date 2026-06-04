@@ -56,26 +56,35 @@ impl SubprocessTopic {
   /// Construct from arbitrary IO halves.  Used by tests with
   /// `tokio::io::duplex`-backed pipes; mirrors the SDK's
   /// `run_with_io` shape.
+  ///
+  /// `initial_data` is the persisted `topic_data` snapshot the host
+  /// hands the topic on init so it can hydrate its in-memory state.
+  /// Empty when there is no prior persisted state for this topic.
   pub async fn from_io<R, W>(
     expected_id: &str,
     reader: R,
     writer: W,
     sink: Arc<dyn TopicDataSink>,
+    initial_data: HashMap<String, serde_json::Value>,
   ) -> Result<Self, HostError>
   where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
   {
-    Self::connect(expected_id, reader, writer, sink, None).await
+    Self::connect(expected_id, reader, writer, sink, None, initial_data).await
   }
 
   /// Spawn a binary and wire up its stdin/stdout to a fresh
   /// `SubprocessTopic`.  Stderr is inherited so subprocess logging
   /// passes through to server stderr.
+  ///
+  /// `initial_data` is the persisted `topic_data` snapshot — see
+  /// [`Self::from_io`].
   pub async fn spawn(
     expected_id: &str,
     command: &[String],
     sink: Arc<dyn TopicDataSink>,
+    initial_data: HashMap<String, serde_json::Value>,
   ) -> Result<Self, HostError> {
     use std::process::Stdio;
     use tokio::process::Command;
@@ -92,7 +101,8 @@ impl SubprocessTopic {
       .map_err(HostError::Spawn)?;
     let stdout = child.stdout.take().ok_or(HostError::MissingPipes)?;
     let stdin = child.stdin.take().ok_or(HostError::MissingPipes)?;
-    Self::connect(expected_id, stdout, stdin, sink, Some(child)).await
+    Self::connect(expected_id, stdout, stdin, sink, Some(child), initial_data)
+      .await
   }
 
   async fn connect<R, W>(
@@ -101,6 +111,7 @@ impl SubprocessTopic {
     writer: W,
     sink: Arc<dyn TopicDataSink>,
     child: Option<tokio::process::Child>,
+    initial_data: HashMap<String, serde_json::Value>,
   ) -> Result<Self, HostError>
   where
     R: AsyncRead + Unpin + Send + 'static,
@@ -133,7 +144,7 @@ impl SubprocessTopic {
       _writer_task: writer_task,
     };
 
-    let init = topic.handshake(expected_id).await?;
+    let init = topic.handshake(expected_id, initial_data).await?;
     topic.id = init.id;
     topic.display_name = init.display_name;
     topic.item_activities = init.item_activities;
@@ -144,9 +155,15 @@ impl SubprocessTopic {
   async fn handshake(
     &self,
     expected_id: &str,
+    initial_data: HashMap<String, serde_json::Value>,
   ) -> Result<InitResponse, HostError> {
     let response = self
-      .send_request(method::INIT, InitRequest::default())
+      .send_request(
+        method::INIT,
+        InitRequest {
+          topic_data: initial_data,
+        },
+      )
       .await
       .map_err(|e| HostError::InitFailed(e.to_string()))?;
     let init: InitResponse = match response {

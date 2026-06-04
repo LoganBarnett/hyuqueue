@@ -3,7 +3,7 @@ pub mod sink;
 use crate::config::TopicConfig;
 use futures::future::join_all;
 use hyuqueue_core::topic::Topic;
-use hyuqueue_store::Db;
+use hyuqueue_store::{topic_data, Db};
 use hyuqueue_topic_host::{SubprocessTopic, TopicDataSink};
 use sink::DbBackedSink;
 use std::collections::HashMap;
@@ -50,21 +50,38 @@ impl TopicRegistry {
 /// skip individually; startup proceeds with a partial registry.
 pub async fn build_registry(configs: &[TopicConfig], db: &Db) -> TopicRegistry {
   let sink: Arc<dyn TopicDataSink> = Arc::new(DbBackedSink::new(db.clone()));
-  let entries = join_all(configs.iter().map(|tc| spawn_one(tc, sink.clone())))
-    .await
-    .into_iter()
-    .flatten()
-    .collect();
+  let entries =
+    join_all(configs.iter().map(|tc| spawn_one(tc, db, sink.clone())))
+      .await
+      .into_iter()
+      .flatten()
+      .collect();
   TopicRegistry { entries }
 }
 
 /// Spawn a single topic subprocess, returning the registry entry on
 /// success or `None` (with a warning logged) on failure.
+///
+/// Fetches the persisted `topic_data` snapshot for this topic id
+/// first so the subprocess can hydrate its in-memory state at
+/// handshake time — see `Topic::init` and `InitRequest.topic_data`.
 async fn spawn_one(
   tc: &TopicConfig,
+  db: &Db,
   sink: Arc<dyn TopicDataSink>,
 ) -> Option<(String, TopicEntry)> {
-  SubprocessTopic::spawn(&tc.id, &tc.command, sink)
+  let initial_data = topic_data::get_all(db, &tc.id)
+    .await
+    .tap_err(|e| {
+      warn!(
+        topic = %tc.id,
+        "Failed to load topic_data for hydrate-on-init: {e}; \
+         starting topic with empty state"
+      )
+    })
+    .unwrap_or_default();
+
+  SubprocessTopic::spawn(&tc.id, &tc.command, sink, initial_data)
     .await
     .tap_err(|e| {
       warn!(

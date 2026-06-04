@@ -14,7 +14,8 @@ use hyuqueue_topic_proto::envelope::{
 use hyuqueue_topic_proto::error::topic_error_to_rpc_error;
 use hyuqueue_topic_proto::method;
 use hyuqueue_topic_proto::payload::{
-  ExecuteRequest, ExecuteResponse, IngestRequest, IngestResponse, InitResponse,
+  ExecuteRequest, ExecuteResponse, IngestRequest, IngestResponse, InitRequest,
+  InitResponse,
 };
 use hyuqueue_topic_proto::version::JsonRpcVersion;
 use serde::Serialize;
@@ -138,7 +139,7 @@ async fn dispatch<T: Topic>(
 ) -> Response {
   let id = request.id;
   match request.method.as_str() {
-    method::INIT => handle_init(topic, id),
+    method::INIT => handle_init(topic, ctx, request, id).await,
     method::INGEST => handle_ingest(topic, ctx, request, id).await,
     method::EXECUTE => handle_execute(topic, ctx, request, id).await,
     method::SHUTDOWN => handle_shutdown(id),
@@ -146,7 +147,24 @@ async fn dispatch<T: Topic>(
   }
 }
 
-fn handle_init<T: Topic>(topic: &T, id: u64) -> Response {
+async fn handle_init<T: Topic>(
+  topic: &T,
+  ctx: &TopicCtx,
+  request: Request,
+  id: u64,
+) -> Response {
+  let req = match serde_json::from_value::<InitRequest>(request.params) {
+    Ok(req) => req,
+    Err(e) => return invalid_params_response(id, e),
+  };
+
+  // Hydrate the topic's in-memory state from the persisted snapshot
+  // before declaring identity back to the host.  An init failure
+  // aborts the handshake and the host treats the topic as failed.
+  if let Err(e) = topic.init(ctx, req.topic_data).await {
+    return topic_error_response(id, &e);
+  }
+
   // `supports_ingest` is reported `true` even when the topic relies on
   // the trait's default impl (which returns an empty vec) — calling it
   // is always safe, and the host has no way to learn otherwise from

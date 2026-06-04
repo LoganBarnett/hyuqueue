@@ -2,6 +2,7 @@ use crate::activity::{Activity, ActivityInvocation};
 use crate::event::Event;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -42,6 +43,26 @@ pub struct IngestItem {
 pub trait Topic: Send + Sync {
   fn id(&self) -> &str;
   fn display_name(&self) -> &str;
+
+  /// Called once at handshake with the persisted `topic_data`
+  /// snapshot for this topic id.  The topic should hydrate its
+  /// in-memory state from `data` so a subprocess restart resumes
+  /// where the previous instance left off.
+  ///
+  /// The topic is the only writer of its own `topic_data`, so this
+  /// snapshot is authoritative — no need to re-fetch during normal
+  /// operation.  Subsequent updates flow through `ctx.set_data`.
+  ///
+  /// Default implementation is a no-op for topics with no persisted
+  /// state.  An error here aborts the handshake and the host will
+  /// not call any further methods.
+  async fn init(
+    &self,
+    _ctx: &TopicCtx,
+    _data: HashMap<String, serde_json::Value>,
+  ) -> Result<(), TopicError> {
+    Ok(())
+  }
 
   /// Poll an external source for new items.  Called periodically by
   /// the ingest worker.  Returns an empty vec by default.

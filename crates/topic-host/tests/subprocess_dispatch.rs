@@ -109,7 +109,13 @@ async fn setup(
   sink: Arc<dyn TopicDataSink>,
 ) -> (SubprocessTopic, FakeRemote) {
   let (sdk_r, sdk_w, mut fake) = make_pipes();
-  let topic_fut = SubprocessTopic::from_io(expected_id, sdk_r, sdk_w, sink);
+  let topic_fut = SubprocessTopic::from_io(
+    expected_id,
+    sdk_r,
+    sdk_w,
+    sink,
+    std::collections::HashMap::new(),
+  );
   let fake_fut = async {
     let req = fake.next_request().await;
     assert_eq!(req.method, method::INIT);
@@ -145,6 +151,39 @@ impl TopicDataSink for RecordingSink {
 // ── tests ────────────────────────────────────────────────────────────
 
 #[tokio::test]
+async fn init_handshake_carries_topic_data_snapshot() {
+  // Verifies the persisted topic_data snapshot the host hands the
+  // subprocess at construction time actually rides on the init wire
+  // payload — the topic-side counterpart of `Topic::init` hydration.
+  let (sdk_r, sdk_w, mut fake) = make_pipes();
+  let mut initial_data = std::collections::HashMap::new();
+  initial_data.insert("counter".to_string(), json!(42));
+  initial_data.insert("cursor".to_string(), json!("2024-01-01"));
+
+  let topic_fut = SubprocessTopic::from_io(
+    "example",
+    sdk_r,
+    sdk_w,
+    Arc::new(NoopSink),
+    initial_data,
+  );
+  let fake_fut = async {
+    let req = fake.next_request().await;
+    assert_eq!(req.method, method::INIT);
+    let data = &req.params["topic_data"];
+    assert!(data.is_object(), "expected topic_data object, got {data}");
+    assert_eq!(data["counter"], json!(42));
+    assert_eq!(data["cursor"], json!("2024-01-01"));
+    fake
+      .respond_success(req.id, default_init_response("example"))
+      .await;
+    fake
+  };
+  let (topic_res, _fake) = tokio::join!(topic_fut, fake_fut);
+  topic_res.expect("handshake should succeed");
+}
+
+#[tokio::test]
 async fn init_handshake_caches_topic_identity() {
   let init = InitResponse {
     id: "example".to_string(),
@@ -175,8 +214,13 @@ async fn init_handshake_caches_topic_identity() {
 #[tokio::test]
 async fn init_handshake_fails_on_id_mismatch() {
   let (sdk_r, sdk_w, mut fake) = make_pipes();
-  let topic_fut =
-    SubprocessTopic::from_io("expected", sdk_r, sdk_w, Arc::new(NoopSink));
+  let topic_fut = SubprocessTopic::from_io(
+    "expected",
+    sdk_r,
+    sdk_w,
+    Arc::new(NoopSink),
+    std::collections::HashMap::new(),
+  );
   let fake_fut = async {
     let req = fake.next_request().await;
     fake

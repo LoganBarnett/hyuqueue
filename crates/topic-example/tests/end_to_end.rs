@@ -12,6 +12,7 @@ use hyuqueue_core::activity::ActivityInvocation;
 use hyuqueue_core::topic::{Topic, TopicCtx, TopicError};
 use hyuqueue_topic_host::{SubprocessTopic, TopicDataSink};
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use uuid::Uuid;
@@ -43,8 +44,18 @@ fn binary_path() -> String {
 async fn spawn_example(
   calls: Arc<Mutex<Vec<(String, String, serde_json::Value)>>>,
 ) -> SubprocessTopic {
+  spawn_example_with_data(calls, HashMap::new()).await
+}
+
+/// Like `spawn_example` but seeds the init handshake with a
+/// pre-existing `topic_data` snapshot — used by the resume-after-
+/// restart test to verify hydrate-on-init.
+async fn spawn_example_with_data(
+  calls: Arc<Mutex<Vec<(String, String, serde_json::Value)>>>,
+  initial_data: HashMap<String, serde_json::Value>,
+) -> SubprocessTopic {
   let sink: Arc<dyn TopicDataSink> = Arc::new(RecordingSink { calls });
-  SubprocessTopic::spawn("example", &[binary_path()], sink)
+  SubprocessTopic::spawn("example", &[binary_path()], sink, initial_data)
     .await
     .expect("spawn topic-example")
 }
@@ -102,6 +113,37 @@ async fn ingest_produces_tick_and_persists_counter() {
   assert_eq!(calls[0].0, "example");
   assert_eq!(calls[0].1, "counter");
   assert_eq!(calls[0].2, 1);
+}
+
+/// The whole point of hydrate-on-init: a "restart" of topic-example
+/// should resume the counter from the persisted value rather than
+/// starting fresh.  The first ingest after the restart emits
+/// "tick-6" (counter was 5, fetch_add -> 6), not "tick-1".
+///
+/// This is the regression test that locks in the read path closing
+/// the duplicate-emission gap that motivated the host-side dedupe
+/// constraint.
+#[tokio::test]
+async fn counter_resumes_from_persisted_topic_data() {
+  let calls = Arc::new(Mutex::new(Vec::new()));
+  let mut initial = HashMap::new();
+  initial.insert("counter".to_string(), json!(5));
+  let topic = spawn_example_with_data(calls.clone(), initial).await;
+
+  let ctx = TopicCtx::stub();
+  let items = topic.ingest(&ctx, &json!({})).await.unwrap();
+  assert_eq!(items.len(), 1);
+  assert_eq!(
+    items[0].external_id.as_deref(),
+    Some("tick-6"),
+    "expected counter to resume from 5; if this fails, hydrate-on-init \
+     is not feeding Topic::init"
+  );
+  assert_eq!(items[0].metadata["counter"], 6);
+
+  wait_for_calls(&calls, 1).await;
+  let calls = calls.lock().unwrap();
+  assert_eq!(calls.last().unwrap().2, 6);
 }
 
 #[tokio::test]

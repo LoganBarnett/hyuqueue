@@ -9,15 +9,29 @@ use hyuqueue_core::activity::{Activity, ActivityInvocation};
 use hyuqueue_core::event::Event;
 use hyuqueue_core::topic::IngestItem;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 // ── init ─────────────────────────────────────────────────────────────
 
-/// Request payload for `init`.  Currently empty; reserved for future
-/// host-side negotiation parameters (protocol version, host
-/// capabilities, etc.).
+/// Request payload for `init`.
+///
+/// Carries the persisted `topic_data` snapshot — the full set of
+/// key/value pairs the host has stored for this topic id.  The topic
+/// uses this to hydrate its in-memory state at handshake time so
+/// per-subprocess restarts resume where the previous instance left
+/// off instead of starting empty.
+///
+/// The topic is the only writer of its own `topic_data`, so this
+/// snapshot is authoritative.  Subsequent mutations flow through the
+/// existing `topic_data_set` notification path.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct InitRequest {}
+pub struct InitRequest {
+  /// Persisted `topic_data` for this topic id; empty on first run
+  /// or for topics that have never written any state.
+  #[serde(default)]
+  pub topic_data: HashMap<String, serde_json::Value>,
+}
 
 /// Response payload for `init`.  This is the topic's complete
 /// declaration of itself: identity, declared activities, and which
