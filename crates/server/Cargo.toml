@@ -16,6 +16,7 @@ name = "hyuqueue-server"
 path = "src/main.rs"
 
 [dependencies]
+rust-template-foundation = { workspace = true, features = ["auth"] }
 aide = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }

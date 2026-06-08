@@ -1,0 +1,32 @@
+#+title:     Changelog
+#+language:  en
+
+* Upcoming
+** Added
+- Dependency on =rust-template-foundation= crate from the
+  =rust-template= flake.  Server crate enables the =auth= feature;
+  CLI crate enables =cli=.  Hyuqueue is migrating onto what the
+  foundation provides over multiple commits.
+- Re-exported =rust_template_foundation::logging::{LogFormat,
+  LogLevel}= from =hyuqueue-lib= so workspace-wide imports keep
+  working unchanged while the underlying types come from the
+  foundation.
+- =CHANGELOG.org= itself (scaffold, following the rust-template
+  =** Added= / =** Fixes= / =** Breaking= convention).
+** Fixes
+** Breaking
+- Server env-var names switched from =LOG_LEVEL=, =DB_PATH=, etc.
+  to the foundation's POSIX-§8.1 convention
+  =hyuqueue_server_log_level=, =hyuqueue_server_db_path=, etc.
+  (lowercase, app-prefixed).  See the foundation's USAGE.org for
+  the rationale.  Existing systemd-deployed instances drive the
+  server via =--config <path>= and are unaffected; anyone passing
+  env vars directly needs to rename.
+- Server config-file search drops the working-directory
+  =./config.toml= lookup (foundation's deliberate choice;
+  silently picking up a stray =config.toml= is a footgun).  Pass
+  =--config <path>= to load a local file.
+- XDG config-file path moved from
+  =$XDG_CONFIG_HOME/hyuqueue/config.toml= to
+  =$XDG_CONFIG_HOME/hyuqueue-server/config.toml= to match the
+  foundation's =app_name=-derived path.

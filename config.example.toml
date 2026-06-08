@@ -1,10 +1,15 @@
 # hyuqueue configuration example
 #
 # Searched in order:
-#   1. --config / $CONFIG_FILE        (explicit)
-#   2. ./config.toml                  (working directory)
-#   3. $XDG_CONFIG_HOME/hyuqueue/config.toml
-#      (default: ~/.config/hyuqueue/config.toml)
+#   1. --config / $hyuqueue_server_config (explicit path)
+#   2. $XDG_CONFIG_HOME/hyuqueue-server/config.toml
+#      (default: ~/.config/hyuqueue-server/config.toml)
+#
+# Note: the working-directory ./config.toml lookup was removed when
+# adopting rust-template-foundation's MergeConfig — see the
+# foundation's `find_config_file` doc comment for the rationale
+# (silently picking up a stray config.toml from the cwd is a
+# footgun).  Pass an explicit path via --config to load a local file.
 
 # Logging
 log_level = "info"   # trace, debug, info, warn, error

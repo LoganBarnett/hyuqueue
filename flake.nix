@@ -6,6 +6,13 @@
     nixpkgs.url = "github:NixOS/nixpkgs/25.11";
     rust-overlay.url = "github:oxalica/rust-overlay";
     crane.url = "github:ipetkov/crane";
+    # The rust-template flake exposes shared Nix helpers (service
+    # modules for NixOS/Darwin, package iteration, devShell snippets)
+    # under `inputs.foundation.lib.*`.  Pin to a release tag so
+    # template-side breakage doesn't surprise us on `nix flake
+    # update` — bump the pin when we do an intentional sync and
+    # append the new commit hash to `rust-template.json`.
+    foundation.url = "github:LoganBarnett/rust-template/v0.7.0";
   };
 
   outputs = {
@@ -13,6 +20,7 @@
     nixpkgs,
     rust-overlay,
     crane,
+    foundation,
   } @ inputs: let
     forAllSystems = nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed;
     overlays = [
@@ -71,51 +79,10 @@
       pkgs.prettier
       pkgs.just
     ];
-  in {
-    devShells = forAllSystems (system: let
-      pkgs = pkgsFor system;
-    in {
-      default = pkgs.mkShell {
-        buildInputs = devPackages pkgs;
-        shellHook = ''
-          echo "hyuqueue development environment"
-          echo ""
-          echo "Available Cargo packages (use 'cargo build -p <name>'):"
-          cargo metadata --no-deps --format-version 1 2>/dev/null | \
-            jq -r '.packages[].name' | \
-            sort | \
-            sed 's/^/  • /' || echo "  Run 'cargo init' to get started"
 
-          echo ""
-          echo "Elm frontend (frontend/):"
-          echo "  Build:   cd frontend && elm make src/Main.elm --output public/elm.js"
-          echo "  Format:  treefmt"
-          echo "  After changing elm.json dependency versions, regenerate Nix files:"
-          echo "    cd frontend"
-          echo "    elm2nix convert 2>/dev/null > elm-srcs.nix"
-          echo "    elm2nix snapshot"
-          echo "    git add elm-srcs.nix registry.dat && git commit"
-
-          # Symlink cargo-husky hooks into .git/hooks/ using paths relative
-          # to .git/hooks/ so the repo stays valid after moves or copies.
-          _git_root=$(git rev-parse --show-toplevel 2>/dev/null)
-          if [ -n "$_git_root" ] && [ "$(pwd)" = "$_git_root" ] && [ -d ".cargo-husky/hooks" ]; then
-            for _hook in .cargo-husky/hooks/*; do
-              [ -x "$_hook" ] || continue
-              _name=$(basename "$_hook")
-              _dest="$_git_root/.git/hooks/$_name"
-              _target=$(${pkgs.coreutils}/bin/realpath --relative-to="$_git_root/.git/hooks" "$(pwd)/$_hook")
-              if [ ! -L "$_dest" ] || [ "$(readlink "$_dest")" != "$_target" ]; then
-                ln -sf "$_target" "$_dest"
-                echo "Installed git hook: $_name -> $_target"
-              fi
-            done
-          fi
-        '';
-      };
-    });
-
-    packages = forAllSystems (system: let
+    # Per-system package + app derivation.  Split out as `let`-bound
+    # since both the `packages` and `apps` flake outputs need it.
+    perSystem = system: let
       pkgs = pkgsFor system;
       craneLib = (crane.mkLib pkgs).overrideToolchain (p: p.rust-bin.stable.latest.default);
 
@@ -146,44 +113,64 @@
         cargoTestExtraArgs = "--lib --bins";
       };
 
-      cratePackages =
-        pkgs.lib.mapAttrs (
-          key: crate: let
-            pkgFile = ./. + "/nix/packages/${key}.nix";
-          in
-            if builtins.pathExists pkgFile
-            then import pkgFile {inherit craneLib commonArgs pkgs;}
-            else
-              craneLib.buildPackage (commonArgs
-                // {
-                  pname = crate.name;
-                  cargoExtraArgs = "-p ${crate.name}";
-                })
-        )
-        workspaceCrates;
-    in
-      cratePackages
-      // {
-        default = craneLib.buildPackage (commonArgs // {pname = "hyuqueue";});
-        emacs = import ./nix/packages/emacs.nix {inherit pkgs;};
-      });
-
-    apps = forAllSystems (system: let
+      # `foundation.lib.mkRustPackages` iterates the crate map,
+      # honoring per-crate overrides at `nix/packages/<key>.nix` so
+      # the server's frontend-bundled build (`nix/packages/server.nix`)
+      # continues to apply.
+      rustOutputs = foundation.lib.mkRustPackages {
+        inherit self pkgs craneLib commonArgs;
+        crates = workspaceCrates;
+      };
+    in {
+      packages =
+        rustOutputs.packages
+        // {
+          default = craneLib.buildPackage (commonArgs // {pname = "hyuqueue";});
+          emacs = import ./nix/packages/emacs.nix {inherit pkgs;};
+        };
+      apps = rustOutputs.apps;
+    };
+  in {
+    devShells = forAllSystems (system: let
       pkgs = pkgsFor system;
-    in
-      pkgs.lib.mapAttrs (key: crate: {
-        type = "app";
-        program = "${self.packages.${system}.${key}}/bin/${crate.binary}";
-      })
-      workspaceCrates);
+    in {
+      default = pkgs.mkShell {
+        buildInputs = devPackages pkgs;
+        shellHook = ''
+          echo "hyuqueue development environment"
+          echo ""
+          echo "Available Cargo packages (use 'cargo build -p <name>'):"
+          cargo metadata --no-deps --format-version 1 2>/dev/null | \
+            jq -r '.packages[].name' | \
+            sort | \
+            sed 's/^/  • /' || echo "  Run 'cargo init' to get started"
+
+          echo ""
+          echo "Elm frontend (frontend/):"
+          echo "  Build:   cd frontend && elm make src/Main.elm --output public/elm.js"
+          echo "  Format:  treefmt"
+          echo "  After changing elm.json dependency versions, regenerate Nix files:"
+          echo "    cd frontend"
+          echo "    elm2nix convert 2>/dev/null > elm-srcs.nix"
+          echo "    elm2nix snapshot"
+          echo "    git add elm-srcs.nix registry.dat && git commit"
+
+          ${foundation.lib.cargoHuskyHookSnippet pkgs}
+        '';
+      };
+    });
+
+    packages = forAllSystems (system: (perSystem system).packages);
+
+    apps = forAllSystems (system: (perSystem system).apps);
 
     nixosModules = {
-      server = import ./nix/modules/nixos-server.nix {inherit self;};
+      server = import ./nix/modules/nixos-server.nix {inherit self foundation;};
       default = self.nixosModules.server;
     };
 
     darwinModules = {
-      server = import ./nix/modules/darwin-server.nix {inherit self;};
+      server = import ./nix/modules/darwin-server.nix {inherit self foundation;};
       default = self.darwinModules.server;
     };
   };

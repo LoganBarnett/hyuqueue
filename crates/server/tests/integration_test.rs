@@ -451,7 +451,7 @@ async fn test_get_item_by_id() {
 
 #[test]
 fn test_config_no_oidc() {
-  use hyuqueue_server::config::{CliRaw, Config};
+  use hyuqueue_server::config::{CliRaw, Config, OidcCliFields};
 
   let cli = CliRaw {
     log_level: None,
@@ -461,9 +461,11 @@ fn test_config_no_oidc() {
     db_path: None,
     frontend_path: None,
     base_url: Some("https://example.com".to_string()),
-    oidc_issuer: None,
-    oidc_client_id: None,
-    oidc_client_secret_file: None,
+    extra: OidcCliFields {
+      oidc_issuer: None,
+      oidc_client_id: None,
+      oidc_client_secret_file: None,
+    },
   };
 
   let config = Config::from_cli_and_file(cli).unwrap();
@@ -472,7 +474,7 @@ fn test_config_no_oidc() {
 
 #[test]
 fn test_config_full_oidc() {
-  use hyuqueue_server::config::{CliRaw, Config};
+  use hyuqueue_server::config::{CliRaw, Config, OidcCliFields};
 
   let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
     .join("tests/fixtures/oidc-client-secret");
@@ -485,9 +487,11 @@ fn test_config_full_oidc() {
     db_path: None,
     frontend_path: None,
     base_url: Some("https://example.com".to_string()),
-    oidc_issuer: Some("https://sso.example.com".to_string()),
-    oidc_client_id: Some("my-client".to_string()),
-    oidc_client_secret_file: Some(fixture),
+    extra: OidcCliFields {
+      oidc_issuer: Some("https://sso.example.com".to_string()),
+      oidc_client_id: Some("my-client".to_string()),
+      oidc_client_secret_file: Some(fixture),
+    },
   };
 
   let config = Config::from_cli_and_file(cli).unwrap();
@@ -499,7 +503,7 @@ fn test_config_full_oidc() {
 
 #[test]
 fn test_config_partial_oidc_errors() {
-  use hyuqueue_server::config::{CliRaw, Config};
+  use hyuqueue_server::config::{CliRaw, Config, OidcCliFields};
 
   let cli = CliRaw {
     log_level: None,
@@ -509,9 +513,11 @@ fn test_config_partial_oidc_errors() {
     db_path: None,
     frontend_path: None,
     base_url: Some("https://example.com".to_string()),
-    oidc_issuer: Some("https://sso.example.com".to_string()),
-    oidc_client_id: None,
-    oidc_client_secret_file: None,
+    extra: OidcCliFields {
+      oidc_issuer: Some("https://sso.example.com".to_string()),
+      oidc_client_id: None,
+      oidc_client_secret_file: None,
+    },
   };
 
   let err = Config::from_cli_and_file(cli).unwrap_err();

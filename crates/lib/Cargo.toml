@@ -8,6 +8,11 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+# Re-exported below so the workspace's `LogLevel` / `LogFormat` are
+# the foundation's types — `MergeConfig`'s `common` attribute on
+# the server's `Config` expects exactly those.  No features pulled
+# in; `pub mod logging` is unconditional in the foundation.
+rust-template-foundation = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 reqwest = { workspace = true }

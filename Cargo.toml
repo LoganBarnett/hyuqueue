@@ -21,6 +21,14 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/yourusername/hyuqueue"
 
 [workspace.dependencies]
+# Foundation infrastructure crate from rust-template — config
+# (MergeConfig), logging, health, metrics, auth.  Server crates
+# enable the "auth" feature; CLI crates enable "cli".  Hyuqueue
+# is in the middle of migrating onto what foundation provides;
+# this dependency is the seam — until call sites are converted,
+# both the foundation-shaped and hand-rolled paths coexist.
+rust-template-foundation = { git = "ssh://git@github.com/LoganBarnett/rust-template.git", tag = "v0.7.0" }
+
 # Logging and tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = [

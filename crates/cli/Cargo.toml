@@ -12,6 +12,7 @@ name = "hyuqueue"
 path = "src/main.rs"
 
 [dependencies]
+rust-template-foundation = { workspace = true, features = ["cli"] }
 clap = { workspace = true }
 hyuqueue-lib = { workspace = true }
 reqwest = { workspace = true }
