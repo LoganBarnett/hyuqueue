@@ -35,6 +35,13 @@ use sqlx::{Acquire, SqliteConnection, SqliteExecutor};
 use thiserror::Error;
 use uuid::Uuid;
 
+/// Raw `queue_items` row as decoded by `sqlx::query_as`: `(item_id,
+/// priority, enqueued_at, claimed_by, claimed_at, lease_expires_at)`.
+/// Named so the dispatch/list queries don't repeat the six-field
+/// tuple inline (which trips clippy's `type_complexity` lint).
+type QueueItemRow =
+  (String, i64, String, Option<String>, Option<String>, Option<String>);
+
 #[derive(Debug, Error)]
 pub enum QueueError {
   #[error("Database error while {context}: {source}")]
@@ -135,14 +142,7 @@ pub async fn dequeue(
   let now = Utc::now();
   let now_str = now.to_rfc3339();
 
-  let row: Option<(
-    String,
-    i64,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-  )> = sqlx::query_as(
+  let row: Option<QueueItemRow> = sqlx::query_as(
     "SELECT item_id, priority, enqueued_at,
             claimed_by, claimed_at, lease_expires_at
      FROM queue_items
@@ -465,14 +465,7 @@ pub async fn list<'e, E: SqliteExecutor<'e>>(
   filter: &SourceFilter,
 ) -> Result<Vec<QueueEntry>, QueueError> {
   let source_filter = filter.source_instance_id.as_deref();
-  let rows: Vec<(
-    String,
-    i64,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-  )> = sqlx::query_as(
+  let rows: Vec<QueueItemRow> = sqlx::query_as(
     "SELECT q.item_id, q.priority, q.enqueued_at,
             q.claimed_by, q.claimed_at, q.lease_expires_at
      FROM queue_items q

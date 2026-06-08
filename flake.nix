@@ -13,6 +13,14 @@
     # update` — bump the pin when we do an intentional sync and
     # append the new commit hash to `rust-template.json`.
     foundation.url = "github:LoganBarnett/rust-template/v0.7.0";
+    # changelog-roller is invoked by the reusable CI workflow's
+    # `changelog` and `abi` jobs (via `nix develop --command
+    # changelog-roller ...`), so it has to live in this consumer
+    # devShell, not just the foundation's.
+    changelog-roller.url = "github:LoganBarnett/changelog-roller";
+    changelog-roller.inputs.nixpkgs.follows = "nixpkgs";
+    changelog-roller.inputs.rust-overlay.follows = "rust-overlay";
+    changelog-roller.inputs.crane.follows = "crane";
   };
 
   outputs = {
@@ -21,6 +29,7 @@
     rust-overlay,
     crane,
     foundation,
+    changelog-roller,
   } @ inputs: let
     forAllSystems = nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed;
     overlays = [
@@ -78,6 +87,16 @@
       pkgs.alejandra
       pkgs.prettier
       pkgs.just
+      # CI tooling: the reusable-ci `changelog` job runs
+      # changelog-roller, and the `abi` job runs cargo-semver-checks.
+      # Both run inside this devShell, so both must be present here.
+      changelog-roller.packages.${pkgs.stdenv.hostPlatform.system}.default
+      # `doCheck = false` skips upstream's target_feature_* snapshot
+      # tests, which assert against x86_64-recorded snapshots and fail
+      # on aarch64-darwin.  We ship only the binary, not its test
+      # suite, so disabling the check phase is safe.  Mirrors the
+      # foundation flake's own treatment.
+      (pkgs.cargo-semver-checks.overrideAttrs (_: {doCheck = false;}))
     ];
 
     # Per-system package + app derivation.  Split out as `let`-bound

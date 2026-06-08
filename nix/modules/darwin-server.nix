@@ -22,8 +22,8 @@
 # Upstream TODO: a `configFile` option on `mkDarwinService` would
 # let the foundation own this wiring, leaving this file with
 # essentially just the activation script for the db dir.  See
-# the rust-template task "Add configFile option to mkNixosService
-# and mkDarwinService".
+# the LoganBarnett/rust-template task "Add configFile option to
+# mkNixosService and mkDarwinService".
 #
 # Minimal usage (defaults to Unix domain socket):
 #

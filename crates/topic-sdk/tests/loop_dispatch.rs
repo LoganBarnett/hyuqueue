@@ -280,12 +280,16 @@ async fn init_passes_topic_data_snapshot_to_topic() {
   .await;
   let _ = h.recv().await;
 
-  let captured = hydrated.lock().unwrap();
-  let map = captured.as_ref().expect("topic.init was not called");
-  assert_eq!(map.len(), 2);
-  assert_eq!(map.get("counter").unwrap(), &json!(7));
-  assert_eq!(map.get("cursor").unwrap(), &json!("abc"));
-  drop(captured);
+  // Scoped so the MutexGuard drops before the await below —
+  // clippy's `await_holding_lock` works on lexical scope, so a
+  // block is cleaner than an explicit `drop`.
+  {
+    let captured = hydrated.lock().unwrap();
+    let map = captured.as_ref().expect("topic.init was not called");
+    assert_eq!(map.len(), 2);
+    assert_eq!(map.get("counter").unwrap(), &json!(7));
+    assert_eq!(map.get("cursor").unwrap(), &json!("abc"));
+  }
 
   drop(h.requests);
   let _ = h.sdk_handle.await.unwrap();
@@ -433,11 +437,14 @@ async fn set_data_emits_topic_data_set_notification() {
   }
 
   // Confirm the topic itself recorded the notification (independent
-  // of what surfaced on the wire).
-  let recorded = recorded.lock().unwrap();
-  assert_eq!(recorded.len(), 1);
-  assert_eq!(recorded[0].0, "cursor");
-  assert_eq!(recorded[0].1, json!(42));
+  // of what surfaced on the wire).  Scoped so the MutexGuard drops
+  // before the await below (clippy's `await_holding_lock`).
+  {
+    let recorded = recorded.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].0, "cursor");
+    assert_eq!(recorded[0].1, json!(42));
+  }
 
   drop(h.requests);
   let _ = h.sdk_handle.await.unwrap();

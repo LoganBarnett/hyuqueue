@@ -7,15 +7,5 @@ on:
     branches: [main]
 
 jobs:
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Run tests
-        run: cargo test --workspace
+  ci:
+    uses: LoganBarnett/rust-template/.github/workflows/reusable-ci.yml@main

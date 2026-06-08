@@ -32,11 +32,12 @@ struct ConfigFileRaw {
 
 impl ConfigFileRaw {
   fn from_file(path: &PathBuf) -> Result<Self, ConfigError> {
-    let contents =
-      std::fs::read_to_string(path).map_err(|source| ConfigError::FileRead {
+    let contents = std::fs::read_to_string(path).map_err(|source| {
+      ConfigError::FileRead {
         path: path.clone(),
         source,
-      })?;
+      }
+    })?;
     toml::from_str(&contents).map_err(|source| ConfigError::Parse {
       path: path.clone(),
       source,

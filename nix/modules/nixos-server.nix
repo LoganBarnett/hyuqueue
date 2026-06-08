@@ -22,8 +22,8 @@
 # Upstream TODO: a `configFile` option on `mkNixosService` would
 # let the foundation own this wiring, leaving this file with
 # essentially just the `ReadWritePaths` line.  See the
-# rust-template task "Add configFile option to mkNixosService and
-# mkDarwinService".
+# LoganBarnett/rust-template task "Add configFile option to
+# mkNixosService and mkDarwinService".
 #
 # Minimal usage (defaults to Unix domain socket):
 #

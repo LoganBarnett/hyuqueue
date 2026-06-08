@@ -2,6 +2,32 @@
   "nodes": {
     "changelog-roller": {
       "inputs": {
+        "crane": [
+          "crane"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "rust-overlay": [
+          "rust-overlay"
+        ]
+      },
+      "locked": {
+        "lastModified": 1780088521,
+        "narHash": "sha256-l47lwX3AzMpaNPXfpEVudzutRpd3zLUve0EfsweOspw=",
+        "owner": "LoganBarnett",
+        "repo": "changelog-roller",
+        "rev": "1c5efbce12c2fc51a5d8c86f1bab24da8fa518d5",
+        "type": "github"
+      },
+      "original": {
+        "owner": "LoganBarnett",
+        "repo": "changelog-roller",
+        "type": "github"
+      }
+    },
+    "changelog-roller_2": {
+      "inputs": {
         "crane": "crane_2",
         "nixpkgs": "nixpkgs",
         "rust-overlay": "rust-overlay"
@@ -67,7 +93,7 @@
     },
     "foundation": {
       "inputs": {
-        "changelog-roller": "changelog-roller",
+        "changelog-roller": "changelog-roller_2",
         "crane": "crane_3",
         "nixpkgs": "nixpkgs_3",
         "org-fmt": "org-fmt",
@@ -215,6 +241,7 @@
     },
     "root": {
       "inputs": {
+        "changelog-roller": "changelog-roller",
         "crane": "crane",
         "foundation": "foundation",
         "nixpkgs": "nixpkgs_5",

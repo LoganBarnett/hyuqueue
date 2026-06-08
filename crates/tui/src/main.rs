@@ -19,16 +19,19 @@ use config::{Config, ConfigError};
 use crossterm::{
   event::{self, Event, KeyCode},
   execute,
-  terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+  terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen,
+    LeaveAlternateScreen,
+  },
 };
 use logging::init_logging;
 use ratatui::{
-  Terminal,
   backend::CrosstermBackend,
   layout::{Constraint, Direction, Layout},
   style::{Color, Modifier, Style},
   text::{Line, Span},
   widgets::{Block, Borders, Paragraph, Wrap},
+  Terminal,
 };
 use std::{io, path::PathBuf};
 use thiserror::Error;
@@ -149,28 +152,16 @@ async fn run_app(
   Ok(())
 }
 
-async fn refresh(
-  http: &reqwest::Client,
-  base: &str,
-  app: &mut AppState,
-) {
+async fn refresh(http: &reqwest::Client, base: &str, app: &mut AppState) {
   // Fetch next item.
-  if let Ok(resp) = http
-    .get(format!("{base}/api/v1/items/next"))
-    .send()
-    .await
-    .and_then(|r| Ok(r))
-  {
+  if let Ok(resp) = http.get(format!("{base}/api/v1/items/next")).send().await {
     if let Ok(json) = resp.json::<serde_json::Value>().await {
       app.item = json.get("item").cloned();
     }
   }
 
   // Fetch count.
-  if let Ok(resp) = http
-    .get(format!("{base}/api/v1/items/count"))
-    .send()
-    .await
+  if let Ok(resp) = http.get(format!("{base}/api/v1/items/count")).send().await
   {
     if let Ok(json) = resp.json::<serde_json::Value>().await {
       app.count = json.get("count").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -191,7 +182,11 @@ fn render(f: &mut ratatui::Frame, app: &AppState) {
   // Header
   let header_text = format!(" hyuqueue  [{} in queue]", app.count);
   let header = Paragraph::new(header_text)
-    .style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+    .style(
+      Style::default()
+        .fg(Color::Green)
+        .add_modifier(Modifier::BOLD),
+    )
     .block(Block::default().borders(Borders::BOTTOM));
   f.render_widget(header, chunks[0]);
 
@@ -205,10 +200,7 @@ fn render(f: &mut ratatui::Frame, app: &AppState) {
       .get("source")
       .and_then(|v| v.as_str())
       .unwrap_or("unknown");
-    let body = item
-      .get("body")
-      .and_then(|v| v.as_str())
-      .unwrap_or("");
+    let body = item.get("body").and_then(|v| v.as_str()).unwrap_or("");
     format!("[{source}] {title}\n\n{body}")
   } else {
     "Queue is empty. Good job.".to_string()
@@ -224,12 +216,16 @@ fn render(f: &mut ratatui::Frame, app: &AppState) {
     vec![
       Span::styled(
         "SPC",
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        Style::default()
+          .fg(Color::Yellow)
+          .add_modifier(Modifier::BOLD),
       ),
       Span::raw(" ack   "),
       Span::styled(
         "r",
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        Style::default()
+          .fg(Color::Cyan)
+          .add_modifier(Modifier::BOLD),
       ),
       Span::raw(" refresh   "),
       Span::styled(
@@ -242,7 +238,9 @@ fn render(f: &mut ratatui::Frame, app: &AppState) {
     vec![
       Span::styled(
         "r",
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        Style::default()
+          .fg(Color::Cyan)
+          .add_modifier(Modifier::BOLD),
       ),
       Span::raw(" refresh   "),
       Span::styled(
@@ -262,7 +260,7 @@ fn render(f: &mut ratatui::Frame, app: &AppState) {
     )])
   };
 
-  let palette = Paragraph::new(status)
-    .block(Block::default().borders(Borders::TOP));
+  let palette =
+    Paragraph::new(status).block(Block::default().borders(Borders::TOP));
   f.render_widget(palette, chunks[2]);
 }

@@ -13,7 +13,19 @@
   foundation.
 - =CHANGELOG.org= itself (scaffold, following the rust-template
   =** Added= / =** Fixes= / =** Breaking= convention).
+- CI now calls the =rust-template= reusable workflows
+  (=reusable-ci=, =reusable-branch-protection=,
+  =reusable-dependabot-automerge=, =reusable-publish=) instead of
+  hand-rolled jobs.  The reusable CI runs test, format, clippy
+  (warnings denied), a changelog-entry gate, and an ABI check, all
+  inside the project devShell.  =changelog-roller= and
+  =cargo-semver-checks= are now in the devShell so those jobs have
+  their tools.
 ** Fixes
+- Removed a no-op =.and_then(|r| Ok(r))= in the TUI's HTTP refresh
+  path and factored repeated sqlx-row and test-helper tuples into
+  named type aliases, clearing the clippy lints the new
+  warnings-denied CI gate surfaced.
 ** Breaking
 - Server env-var names switched from =LOG_LEVEL=, =DB_PATH=, etc.
   to the foundation's POSIX-§8.1 convention

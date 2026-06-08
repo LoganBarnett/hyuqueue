@@ -106,11 +106,16 @@ fn text_only_response(content: &str) -> CompletionResponse {
 
 // ── stub topics ──────────────────────────────────────────────────────
 
+/// Recorded `execute()` invocations: `(activity_id, params,
+/// item_id)` per call.  Aliased so the repeated `Arc<Mutex<Vec<...>>>`
+/// doesn't trip clippy's `type_complexity` lint.
+type Invocations = Arc<Mutex<Vec<(String, serde_json::Value, Uuid)>>>;
+
 struct RecordingTopic {
   id: String,
   globals: Vec<Activity>,
   /// Records (activity_id, params, item_id) for each execute() call.
-  invocations: Arc<Mutex<Vec<(String, serde_json::Value, Uuid)>>>,
+  invocations: Invocations,
   /// If Some, execute() returns this error.  If None, returns an ok event.
   fail_with: Option<TopicError>,
 }
@@ -214,7 +219,7 @@ fn registry_with_topic(
   topic_id: &str,
   globals: Vec<Activity>,
   fail_with: Option<TopicError>,
-) -> (TopicRegistry, Arc<Mutex<Vec<(String, serde_json::Value, Uuid)>>>) {
+) -> (TopicRegistry, Invocations) {
   let invocations = Arc::new(Mutex::new(Vec::new()));
   let topic = RecordingTopic {
     id: topic_id.to_string(),

@@ -17,8 +17,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use uuid::Uuid;
 
+/// Recorded `set_data` invocations: `(topic_id, key, value)` per
+/// call.  Aliased so the repeated `Arc<Mutex<Vec<...>>>` in the
+/// helpers below doesn't trip clippy's `type_complexity` lint.
+type Calls = Arc<Mutex<Vec<(String, String, serde_json::Value)>>>;
+
 struct RecordingSink {
-  calls: Arc<Mutex<Vec<(String, String, serde_json::Value)>>>,
+  calls: Calls,
 }
 
 #[async_trait]
@@ -41,9 +46,7 @@ fn binary_path() -> String {
   env!("CARGO_BIN_EXE_hyuqueue-topic-example").to_string()
 }
 
-async fn spawn_example(
-  calls: Arc<Mutex<Vec<(String, String, serde_json::Value)>>>,
-) -> SubprocessTopic {
+async fn spawn_example(calls: Calls) -> SubprocessTopic {
   spawn_example_with_data(calls, HashMap::new()).await
 }
 
@@ -51,7 +54,7 @@ async fn spawn_example(
 /// pre-existing `topic_data` snapshot — used by the resume-after-
 /// restart test to verify hydrate-on-init.
 async fn spawn_example_with_data(
-  calls: Arc<Mutex<Vec<(String, String, serde_json::Value)>>>,
+  calls: Calls,
   initial_data: HashMap<String, serde_json::Value>,
 ) -> SubprocessTopic {
   let sink: Arc<dyn TopicDataSink> = Arc::new(RecordingSink { calls });
@@ -63,10 +66,7 @@ async fn spawn_example_with_data(
 /// The notification → sink hop is asynchronous on the host side.
 /// Wait up to ~1s for at least `expected` calls to land before
 /// continuing.
-async fn wait_for_calls(
-  calls: &Arc<Mutex<Vec<(String, String, serde_json::Value)>>>,
-  expected: usize,
-) {
+async fn wait_for_calls(calls: &Calls, expected: usize) {
   for _ in 0..50 {
     if calls.lock().unwrap().len() >= expected {
       return;
