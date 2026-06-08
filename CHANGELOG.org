@@ -26,6 +26,9 @@
   path and factored repeated sqlx-row and test-helper tuples into
   named type aliases, clearing the clippy lints the new
   warnings-denied CI gate surfaced.
+- TUI item view now reads =source_instance_id= instead of the
+  =source= field the item-schema refactor removed, so it shows the
+  real origin instead of always =[unknown]=.
 ** Breaking
 - Server env-var names switched from =LOG_LEVEL=, =DB_PATH=, etc.
   to the foundation's POSIX-§8.1 convention

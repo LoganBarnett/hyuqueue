@@ -197,7 +197,7 @@ fn render(f: &mut ratatui::Frame, app: &AppState) {
       .and_then(|v| v.as_str())
       .unwrap_or("(no title)");
     let source = item
-      .get("source")
+      .get("source_instance_id")
       .and_then(|v| v.as_str())
       .unwrap_or("unknown");
     let body = item.get("body").and_then(|v| v.as_str()).unwrap_or("");
